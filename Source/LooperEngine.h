@@ -116,24 +116,27 @@ enum class MixerControl { volume, pan, mute, solo };     // a pad's mixer strip,
 // buffers (supplyRecordBuffer); finished work and retired clips flow back through an ordered
 // event queue that the UI drains with pollEvents().
 //
-// Effects: the input, and each pad, can have a chain of effect plugins (FxChain). They shape what goes INTO a
-// pad: the input runs through its own chain (monitorTarget), then through the chain of the pad that is
-// recording it, and the take or overdub captures the result; loops play back as recorded. While Monitor is
-// on you hear the input through the active pad's chain (the last pad pressed). When a chain stops being
-// heard it keeps running until its output has been silent for a moment (reverb and delay tails), then idles
-// and costs nothing. Recordings are shifted by the chains' reported latency too, so they stay on the beat.
+// Effects: the input, and each pad, can have a chain of effect plugins (FxChain). The input's own chain
+// (monitorTarget) is recorded: takes and overdubs capture the input after it. A pad's chain is on its output: the
+// pad's playback (loaded file or take) runs through it live, so it can be changed at any time, and recordings are
+// dry. While Monitor is on you hear the input through the active pad (the last pad pressed): its effects and its
+// mixer strip. When a pad stops sounding its chain keeps running until its output has been silent for a moment
+// (reverb and delay tails), then idles and costs nothing. Recordings are shifted by the input chain's reported
+// latency; a pad whose effects add latency plays its clip that much early (starts, stops and the end of a take
+// are brought forward), so it stays on the beat.
 // Chains are swapped in whole through the command queue; a chain prepared at a sample rate or block size the
 // device is no longer running at is sent back (Event::fxStale) for the UI to rebuild.
 //
 // Instrument pads: a pad's chain can start with an instrument plugin. MIDI on the performance channel plays the
 // active pad's instrument (a note-off goes to the pad that got the note-on, so switching pads mid-note can't hang
-// it). The instrument then takes the input's place for that pad: its effects shape it, you hear it while the pad
-// is active or recording (Monitor is only for the audio input), and takes / overdubs record it. It needs no audio
-// input. Its recordings are shifted by instrumentLatency (the output half of the round trip) plus the chain's.
+// it). The instrument then takes the input's place for that pad: you hear it through the pad's effects while the pad
+// is active or recording (Monitor is only for the audio input), and takes / overdubs record it dry, before the
+// effects. It needs no audio input. Its recordings are shifted by instrumentLatency (the output half of the round
+// trip) plus the instrument's own.
 //
 // Mixer: each pad's playback goes through a strip (fader, constant-power pan, mute, solo) on its way to the main
-// outputs. It is playback-only: recordings are taken before it, and so is the live sound of the input or an instrument
-// through a pad's chain. Mute keeps the pad running silently, so a muted loop stays in time. Changes ramp over
+// outputs, after the pad's effects. It is playback-only: recordings are taken before it. The live sound of the
+// monitored input or an instrument goes through the active pad's strip too (like a DAW track). Mute keeps the pad running silently, so a muted loop stays in time. Changes ramp over
 // fadeSeconds so they don't click. Solo silences every pad that isn't soloed (the metronome and preview are never
 // affected). Volume and pan can follow a MIDI knob with soft takeover: after the UI sets a value, the knob has to
 // pass through it before it takes over, so nothing jumps.
@@ -360,13 +363,13 @@ private:
     {
         FxChain* chain = nullptr;
         bool running = false;
-        bool heard = false;             // its output goes to the speakers (else it only feeds a recording)
         int silent = 0, tail = 0;       // samples of silence / of tail since it stopped being fed
     };
 
     struct PadState
     {
         FxRun fx;
+        bool sounded = false;            // went through its strip last block (so gain changes ramp)
 
         Clip* clip = nullptr;
         PadMode mode = PadMode::oneShot;
@@ -429,6 +432,7 @@ private:
 
     static bool hasInstrument (const PadState& p) noexcept { return p.fx.chain != nullptr && p.fx.chain->instrument; }
     int  inputLatency (const PadState&) const noexcept;
+    static int playbackLead (const PadState& p) noexcept { return p.fx.chain != nullptr ? p.fx.chain->effectsLatency : 0; }
     void routePerformanceMidi (int n);
     void captureTake (PadState&, const juce::AudioBuffer<float>* input, int n, juce::int64 blockStart);
     void captureOverdub (PadState&, const juce::AudioBuffer<float>* input, int n, juce::int64 blockStart);
@@ -438,8 +442,7 @@ private:
     bool applyKnob (int cc, int value, int channel) noexcept;
     bool pressMixerButton (int control, int channel) noexcept;
     void mixStrip (int index, bool wasSounding, bool sounded, bool anySolo, juce::AudioBuffer<float>& out, int destStart, int n);
-    void runEffects (FxRun&, bool fed, bool heard, juce::AudioBuffer<float>& out, int destStart, int n,
-                     const juce::MidiBuffer* notes = nullptr);
+    bool runPadEffects (PadState&, bool playing, bool live, int n, const juce::MidiBuffer& notes);
 
     void retire (Clip*);
     bool postEvent (const Event&);
@@ -467,9 +470,9 @@ private:
     std::array<juce::MidiBuffer, numPads> padMidi;   // this block's notes for each pad's instrument
     juce::AudioBuffer<float> inputScratch;       // this block's input, copied before the buffer is cleared
     bool haveInput = false;
-    juce::AudioBuffer<float> fxScratch;          // the input on its way through a pad's effects
+    juce::AudioBuffer<float> fxScratch;          // an instrument's output, before the pad's effects
     FxRun monitorFx;                             // the input's own effects (only `chain` is used)
-    juce::AudioBuffer<float> padOut;             // one pad's playback on its way through its mixer strip
+    juce::AudioBuffer<float> padOut;             // one pad's playback on its way through its effects and mixer strip
     std::mutex fxPrepareLock;
 
     std::array<PadState, numPads> pads;

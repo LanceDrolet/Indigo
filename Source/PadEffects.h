@@ -375,6 +375,7 @@ private:
 
         chain->instrument = instruments[(size_t) target] != nullptr;
         chain->latency = chain->getLatencySamples();
+        chain->effectsLatency = chain->getLatencySamples (chain->instrument ? 1 : 0);
 
         if (! engine.setEffects (target, std::move (chain)))
         {

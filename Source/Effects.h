@@ -127,24 +127,29 @@ struct FxChain
     std::vector<std::shared_ptr<FxSlot>> slots;
     double rate = 0.0;
     int block = 0;
-    int latency = 0;                // getLatencySamples() when it was sent; recordings are shifted by it
+    int latency = 0;                // getLatencySamples() when it was sent
+    int effectsLatency = 0;         // the part of it after the instrument: the pad plays its clip this much early
     bool instrument = false;        // slots[0] is an instrument (it's always first)
     juce::MidiBuffer midi;          // what each plugin gets: the notes for the instrument, else empty
 
     FxChain() { midi.ensureSize (4096); }
 
-    // Audio thread. Runs the 2-channel buffer through every plugin in place, in pieces no longer than
-    // the block size the plugins were prepared for. An instrument ignores the buffer's audio and plays `notes`
-    // (sample positions within the buffer) into it.
-    void process (juce::AudioBuffer<float>& buffer, int numSamples, const juce::MidiBuffer* notes = nullptr) noexcept
+    // Audio thread. Runs the 2-channel buffer through the plugins from slots[first] up to (not including)
+    // slots[end] in place, in pieces no longer than the block size the plugins were prepared for. An instrument
+    // ignores the buffer's audio and plays `notes` (sample positions within the buffer) into it.
+    void process (juce::AudioBuffer<float>& buffer, int numSamples, const juce::MidiBuffer* notes = nullptr,
+                  size_t first = 0, size_t end = SIZE_MAX) noexcept
     {
+        end = juce::jmin (end, slots.size());
+
         for (int start = 0; start < numSamples; start += block)
         {
             const int n = juce::jmin (block, numSamples - start);
             float* chans[2] = { buffer.getWritePointer (0, start), buffer.getWritePointer (1, start) };
 
-            for (auto& s : slots)
+            for (size_t i = first; i < end; ++i)
             {
+                auto& s = slots[i];
                 auto& p = *s->plugin;
                 const juce::ScopedLock sl (p.getCallbackLock());
 
@@ -239,11 +244,11 @@ struct FxChain
         block = newBlock;
     }
 
-    int getLatencySamples() const
+    int getLatencySamples (size_t first = 0) const
     {
         int total = 0;
-        for (auto& s : slots)
-            total += s->plugin->getLatencySamples();
+        for (size_t i = first; i < slots.size(); ++i)
+            total += slots[i]->plugin->getLatencySamples();
         return total;
     }
 };

@@ -83,7 +83,7 @@ void LooperEngine::prepareToPlay (int samplesPerBlockExpected, double sr)
             if (r.chain != nullptr)
                 r.chain->reprepare (sr, blockSize.load());
 
-            r.running = r.heard = false;
+            r.running = false;
             r.silent = r.tail = 0;
         };
 
@@ -818,15 +818,14 @@ void LooperEngine::cancelOverdub (PadState& p)
     p.odStopAt = -1;
 }
 
-// The round trip plus the effects the input went through on its way to this pad. An instrument isn't played from
-// the input, so only the output half of the trip counts, plus its own chain.
+// The round trip plus the input's effects (recordings are taken before the pad's own). An instrument isn't played
+// from the input, so only the output half of the trip counts, plus the instrument's own latency.
 int LooperEngine::inputLatency (const PadState& p) const noexcept
 {
     if (hasInstrument (p))
-        return instrumentLatency.load() + p.fx.chain->latency;
+        return instrumentLatency.load() + p.fx.chain->latency - p.fx.chain->effectsLatency;
 
-    return recordLatency.load() + (monitorFx.chain != nullptr ? monitorFx.chain->latency : 0)
-                                + (p.fx.chain != nullptr ? p.fx.chain->latency : 0);
+    return recordLatency.load() + (monitorFx.chain != nullptr ? monitorFx.chain->latency : 0);
 }
 
 // Input at transport time T becomes take index T - latency - recStartAt.
@@ -979,7 +978,7 @@ void LooperEngine::apply (const Command& c)
             e.type = Event::Type::retireFx;
             e.fx = run->chain;
             run->chain = c.fx;
-            run->running = run->heard = false;
+            run->running = false;
             run->silent = run->tail = 0;
         }
 
@@ -1176,45 +1175,49 @@ void LooperEngine::renderPad (PadState& p, juce::AudioBuffer<float>& out, int de
     }
 }
 
-// fxScratch holds `n` samples of the input on its way into a pad (silence if it's no longer fed, or if the chain
-// starts with an instrument, which plays `notes` instead); runs them through the pad's chain, and mixes the result
-// into `out` if it's being heard. Once the chain is no longer
-// fed, a heard chain rings out until a stretch of silence, then idles.
-void LooperEngine::runEffects (FxRun& run, bool fed, bool heard, juce::AudioBuffer<float>& out, int destStart, int n,
-                               const juce::MidiBuffer* notes)
+// padOut holds `n` samples of the pad's playback. Adds the live sound to it (the instrument playing `notes`, or the
+// monitored input if `live`) and runs it all through the pad's effects in place. Returns whether the chain ran. Once
+// nothing feeds it, the chain rings out until a stretch of silence, then idles.
+bool LooperEngine::runPadEffects (PadState& p, bool playing, bool live, int n, const juce::MidiBuffer& notes)
 {
-    run.chain->process (fxScratch, n, notes);
+    auto& run = p.fx;
+    const bool instrument = run.chain->instrument;
+    const bool fed = playing || live || ! notes.isEmpty();
 
-    if (fed)
-        run.heard = heard;
+    if (! fed && ! run.running)
+        return false;
 
-    if (run.heard)
+    if (instrument)
     {
-        const auto chans = OutputBuses::channels (OutputBuses::main, out.getNumChannels());
+        fxScratch.clear (0, n);
+        run.chain->process (fxScratch, n, &notes, 0, 1);
 
-        for (int ch = chans.getStart(); ch < chans.getEnd(); ++ch)
-            out.addFrom (ch, destStart, fxScratch, juce::jmin (ch, 1), 0, n);
+        for (int ch = 0; ch < 2; ++ch)
+            padOut.addFrom (ch, 0, fxScratch, ch, 0, n);
     }
+    else if (live)
+    {
+        for (int ch = 0; ch < 2; ++ch)
+            padOut.addFrom (ch, 0, inputScratch, ch, 0, n);
+    }
+
+    run.chain->process (padOut, n, nullptr, instrument ? 1 : 0);
 
     if (fed)
     {
         run.running = true;
         run.silent = run.tail = 0;
-        return;
-    }
-
-    if (! run.heard)
-    {
-        run.running = false;
-        return;
+        return true;
     }
 
     const double sr = sampleRate.load();
     run.tail += n;
-    run.silent = fxScratch.getMagnitude (0, n) < 1.0e-4f ? run.silent + n : 0;     // -80 dB
+    run.silent = juce::jmax (padOut.getMagnitude (0, 0, n), padOut.getMagnitude (1, 0, n)) < 1.0e-4f ? run.silent + n : 0;  // -80 dB
 
     if (run.silent >= (int) (fxIdleSeconds * sr) || run.tail >= (int) (fxMaxTailSeconds * sr))
         run.running = false;
+
+    return true;
 }
 
 // Splits this block's performance-channel MIDI into the pads' instrument buffers: notes go to the active pad, and
@@ -1434,7 +1437,7 @@ void LooperEngine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
     // 4. The input's own effects, whenever it's heard or recorded
     const bool monitoring = monitorOn.load() && haveInput;
     const int active = activePad.load (std::memory_order_relaxed);
-    const bool fxFits = n <= fxScratch.getNumSamples();
+    const bool fxFits = n <= fxScratch.getNumSamples() && n <= padOut.getNumSamples();
 
     if (haveInput && monitorFx.chain != nullptr && fxFits)
     {
@@ -1446,9 +1449,9 @@ void LooperEngine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
             monitorFx.chain->process (inputScratch, n);
     }
 
-    bool inputHeard = false;    // the active pad's chain already played the monitored input
+    bool inputHeard = false;    // the active pad already played the monitored input
     const bool anySolo = isAnySoloed();
-    const bool mixFits = n <= padOut.getNumSamples();
+    const bool mixFits = fxFits;
 
     // 5. Render pads, splitting the block where a pending start/stop lands, then record into them
     for (int i = 0; i < numPads; ++i)
@@ -1459,17 +1462,19 @@ void LooperEngine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
         if (p.recActive && ! p.recPromoted && p.recStopAt < 0 && p.recAutoAt <= blockEnd + n)
             scheduleRecStop (p, p.recAutoK);
 
-        // Playback goes through the pad's mixer strip (padOut), unless the block is too big for it.
+        // Playback goes through the pad's effects and mixer strip (padOut), unless the block is too big for them.
+        // A pad whose effects add latency acts that much early, so it's heard on time.
         auto& dest = mixFits ? padOut : out;
         const int base = mixFits ? 0 : info.startSample;
         const bool wasActive = p.active;
+        const int lead = mixFits ? playbackLead (p) : 0;
 
         if (mixFits)
             padOut.clear (0, n);
 
-        if (p.pending != Pending::none && p.pendingAt < blockEnd)
+        if (p.pending != Pending::none && p.pendingAt - lead < blockEnd)
         {
-            const int split = (int) juce::jmax ((juce::int64) 0, p.pendingAt - blockStart);
+            const int split = (int) juce::jmax ((juce::int64) 0, p.pendingAt - lead - blockStart);
 
             renderPad (p, dest, base, split);
 
@@ -1480,12 +1485,12 @@ void LooperEngine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
                     p.gain = p.pendingGain;
                     p.active = true;
                     p.fadeLeft = 0;
-                    p.startAt = blockStart + split;
+                    p.startAt = blockStart + split + lead;
                     p.lagDebt = 0.0;
                     break;
 
                 case Pending::stop:      fadeOut (p); break;
-                case Pending::recFinal:  promoteTake (p, blockStart + split); break;
+                case Pending::recFinal:  promoteTake (p, blockStart + split + lead); break;
                 case Pending::none:      break;
             }
             p.pending = Pending::none;
@@ -1498,29 +1503,37 @@ void LooperEngine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
             renderPad (p, dest, base, n);
         }
 
-        if (mixFits)
-            mixStrip (i, wasActive, wasActive || p.active, anySolo, out, info.startSample, n);
-
-        // The input runs through this pad's effects while the pad records it, or while it's the active pad and
-        // the input is monitored; what's recorded is what comes out. The loop then plays back as recorded.
-        // An instrument pad plays its instrument instead, heard while it's active or recording.
+        // Recordings are dry: the input (after its own effects), or an instrument's output before the pad's effects.
+        // The live sound goes through the active pad (an instrument pad's while it's recording too).
         const bool instrument = hasInstrument (p);
-        const bool heard = instrument ? (i == active || p.recActive || p.odActive) : (i == active && monitoring);
-        const bool fed = instrument ? heard : haveInput && (p.recActive || p.odActive || heard);
-        const auto& notes = padMidi[(size_t) i];
+        const bool live = instrument ? (i == active || p.recActive || p.odActive) : (i == active && monitoring && mixFits);
         const juce::AudioBuffer<float>* recordFrom = instrument || ! haveInput ? nullptr : &inputScratch;
+        bool sounded = wasActive || p.active;
 
-        if (p.fx.chain != nullptr && fxFits && (fed || p.fx.running || ! notes.isEmpty()))
+        if (p.fx.chain != nullptr && mixFits)
         {
-            if (fed && ! instrument)
-                for (int ch = 0; ch < 2; ++ch)
-                    fxScratch.copyFrom (ch, 0, inputScratch, ch, 0, n);
-            else
-                fxScratch.clear (0, n);
+            if (runPadEffects (p, sounded, live, n, padMidi[(size_t) i]))
+            {
+                sounded = true;
 
-            runEffects (p.fx, fed, heard, out, info.startSample, n, instrument ? &notes : nullptr);
-            recordFrom = &fxScratch;
-            inputHeard = inputHeard || (heard && ! instrument);
+                if (instrument)
+                    recordFrom = &fxScratch;
+            }
+        }
+        else if (live && ! instrument)
+        {
+            for (int ch = 0; ch < 2; ++ch)
+                padOut.addFrom (ch, 0, inputScratch, ch, 0, n);
+
+            sounded = true;
+        }
+
+        inputHeard = inputHeard || (live && ! instrument);
+
+        if (mixFits)
+        {
+            mixStrip (i, p.sounded, sounded, anySolo, out, info.startSample, n);
+            p.sounded = sounded;
         }
 
         captureTake (p, recordFrom, n, blockStart);
@@ -1543,7 +1556,7 @@ void LooperEngine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
     if (metronomeOn.load())
         renderMetronome (out, info.startSample, n, blockStart);
 
-    // 7. Input monitoring, unless the active pad's effects already played it
+    // 7. Input monitoring, unless the active pad already played it
     if (monitoring && ! inputHeard)
     {
         const auto chans = OutputBuses::channels (OutputBuses::main, out.getNumChannels());
