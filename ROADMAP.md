@@ -74,8 +74,8 @@ Decided:
   LADSPA/DSSI plugin into Indigo at startup and a bad one crashed it. So bridged LADSPA/DSSI plugins aren't offered.
 - Missing plugin on session load: it is removed from the pad (tell the user which ones).
 - Idle chains use no CPU: a stopped pad's chain runs until its effect tail dies away, then stops processing.
-- Plugins that add latency (lookahead etc.): recordings are compensated; you still hear yourself late, so
-  the effects window warns.
+- Plugins that add latency (lookahead etc.): recordings are compensated for the input chain, and a pad plays early
+  by its own effects' latency; you still hear yourself late, so the effects window warns.
 
 Built in this order:
 1. Scanning + plugin manager window. (Done 2026-10-19, Edit > Plugins; user confirmed VST3 + LV2 scans incl. LV2 instruments.)
@@ -88,6 +88,10 @@ Built in this order:
    recorded (so loaded samples no longer go through pad effects). With Monitor on you hear the input through
    the active pad's chain (last pad pressed; blue outline). Recordings are shifted by the chains' latency.
    Use case: chorus pad for rhythm guitar, then a distortion pad for the lead over it.
+   Changed again 2026-10-24: a pad's chain is on its OUTPUT. The pad's playback (loaded file or take) runs
+   through it live, so effects can be changed at any time, and recordings are dry; only the input's own chain is
+   recorded. Instrument pads record the instrument dry, before their effects. Recordings are shifted by the input
+   chain's latency; a pad whose effects add latency plays its clip that much early, so it stays on the beat.
 3. Active pad, instrument pads, performance-channel routing, audition mode. (Instrument pads and
    performance-channel routing are in the engine; the user tested a VSTi 2026-10-23 and it works well.
    Audition mode isn't a separate feature: an empty pad that is the active pad is auditioning; confirmed
@@ -137,6 +141,8 @@ building:
   CC 0-127 maps straight onto the fader travel; pan CC 64 is centre.
 - Only clip playback goes through the strip. The live sound of the monitored input or an instrument through a pad's
   chain does not (so mute / solo never cut what you're playing). Revisit if instrument pads should follow their fader.
+  Changed 2026-10-24: the live sound now goes through the active pad's strip too (like a DAW track), after its
+  effects, so the fader, pan, mute and solo apply to it.
 - A pad that is muted or soloed out is dimmed on the grid with a MUTED tag.
 - Mixer MIDI mappings are saved with the MIDI presets; Settings > MIDI Mapping lists them below the pads (volume and
   pan only take CCs). Right-click any mixer control: MIDI Learn / Clear.

@@ -57,12 +57,15 @@ Wine.
 - **Pad right-click > Instrument & Effects...** gives a pad an instrument and a chain of effects. Open a plugin's
   own editor from that window.
 - **FX** (next to Monitor) is an effects chain on the input itself.
-- **Effects are recorded.** Your input goes through the input chain and then the pad's chain, and the take captures
-  the result. So you can set up a chorus pad for rhythm guitar and a distortion pad for the lead.
+- **A pad's effects are live.** The pad's sound (a loaded file or a take) plays through its effects, so you can
+  change them at any time, even on a take you've already recorded. Recordings are dry: only the input's own **FX**
+  chain is recorded. With Monitor on you hear your input through the active pad's effects.
 - **Instrument pads:** the **active pad** (the last one pressed, outlined in blue) receives the notes you play on the
-  **performance channel** (set in Settings > MIDI Mapping). Record what you play as a take, just like audio. An
-  empty active pad lets you play its instrument and effects before recording.
-- Plugins that add delay (e.g. lookahead limiters) are compensated in recordings, and the effects window shows how
+  **performance channel** (set in Settings > MIDI Mapping). Record what you play as a take, just like audio; the
+  take is the instrument's dry sound, and the pad's effects are applied as it plays. An empty active pad lets you
+  play its instrument and effects before recording.
+- Plugins that add delay (e.g. lookahead limiters) are compensated: the input chain's delay is taken out of
+  recordings, and a pad whose effects add delay plays early so it stays on the beat. The effects window shows how
   much delay they add.
 
 ## Mixer
@@ -71,6 +74,8 @@ Each pad has a **volume fader**, **pan** knob, **level meter**, **M** (mute) and
 
 - Faders and pan shape playback only; recordings are captured before them. Double-click resets a fader to 0 dB or
   the pan to centre.
+- What you play live (the monitored input or an instrument) goes through the active pad's strip, like a track in a
+  DAW, so muting that pad silences it too.
 - Muting a pad keeps it running silently, so a loop stays in time and comes back in sync. Muted pads are dimmed and
   tagged MUTED on the grid.
 - Any number of pads can be soloed. **Unmute all** clears every mute and solo; **Mute all** mutes everything.
