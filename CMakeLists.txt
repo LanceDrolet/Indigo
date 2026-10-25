@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(Indigo VERSION 2026.10.1)
+project(Indigo VERSION 2026.10.2)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
