@@ -96,6 +96,24 @@ Each pad has a **volume fader**, **pan** knob, **level meter**, **M** (mute) and
 - **Templates** keep a pad setup (modes, choke groups, plugins) without any sounds. Indigo restores your last setup
   when it starts.
 
+## Download
+
+Prebuilt Linux (x86-64) binaries are on the [Releases](https://github.com/LanceDrolet/Indigo/releases) page. They
+run on distros with glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36 and later). Unpack and run:
+
+```sh
+tar xzf Indigo-*-linux-x86_64.tar.gz
+./Indigo-*-linux-x86_64/Indigo
+```
+
+You need ALSA, freetype and fontconfig, which almost every desktop already has. JACK is optional.
+
+## Feedback and bugs
+
+Indigo is early software. Please report bugs and ideas on the
+[issue tracker](https://github.com/LanceDrolet/Indigo/issues). For a bug, say what you did, what happened, your distro,
+your audio setup (ALSA, JACK or PipeWire, and the interface), and the plugin involved if there is one.
+
 ## Building
 
 Requires CMake 3.24+, a C++17 compiler, and the usual JUCE Linux dependencies (ALSA, JACK, X11, freetype, etc.).

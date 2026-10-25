@@ -4,3 +4,6 @@ build/
 
 # CLion / IntelliJ project settings (per machine)
 .idea/
+
+# Scratch sessions
+*.indigo

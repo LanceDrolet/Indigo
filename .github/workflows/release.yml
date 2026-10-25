@@ -1,0 +1,58 @@
+# Builds the Linux binary. Pushing a v* tag also publishes it as a GitHub pre-release; running the workflow by
+# hand (Actions > Release > Run workflow) only builds, and leaves the tarball as a workflow artifact.
+#
+# Built on Ubuntu 22.04 so the binary runs on any distro with glibc 2.35 or newer.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build \
+            libasound2-dev libjack-jackd2-dev libfreetype-dev libfontconfig1-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev
+
+      - name: Configure
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Package
+        run: |
+          version=$(sed -n 's/^project(Indigo VERSION \([^)]*\))/\1/p' CMakeLists.txt)
+          name="Indigo-${version}-linux-x86_64"
+          mkdir "$name"
+          cp build/Indigo_artefacts/Release/Indigo README.md LICENSE "$name"/
+          strip "$name/Indigo"
+          tar czf "$name.tar.gz" "$name"
+          echo "TARBALL=$name.tar.gz" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.TARBALL }}
+          path: ${{ env.TARBALL }}
+
+      - name: Publish pre-release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$TARBALL" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "$TARBALL" --prerelease --title "Indigo $GITHUB_REF_NAME" --generate-notes
+          fi
