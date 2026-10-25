@@ -20,7 +20,62 @@ headphones and never reach the main mix.
   OutputBuses.h) that can be connected to the headphones in a patchbay. What's left is the ALSA /
   multi-output-interface case above.
 
+### Pad groups
+Link several pads so one move of a control applies to all of them, e.g. one fader for a drum kit spread
+over four pads, or muting all the backing loops at once. Separate from choke groups: a pad can be in both.
+
+Decided 2026-10-25:
+- Groups 1–8, like choke groups: right-click a pad > Group; a coloured tag on the pad and on its mixer strip.
+  A pad is in at most one group.
+- Each group has its own set of linked controls, chosen with checkboxes (Settings > Groups, one row per group):
+  Volume, Pan, Mute, Solo, Start, Stop. Defaults: Volume, Mute, Solo on.
+- No grouped recording: REC stays per pad (no need for it yet).
+- Volume and pan are relative: moving one member's fader moves the others by the same amount in dB, so the
+  balance within the group is kept. A member that reaches the bottom or top stops there while the others carry on.
+- No separate group (VCA) fader: the linked member faders are enough.
+- Hold a modifier (Alt) while moving a control to change that pad on its own.
+- Mute / Solo / Start / Stop on one member apply to the whole group on the same sample (one engine command,
+  not one per pad), so grouped loops start and stop on the same grid line.
+- Choke groups don't act between pads started together by their pad group (two members sharing a choke group
+  would otherwise choke each other). Pads outside the group are choked as usual.
+- MIDI: a CC mapped to a grouped control moves the group, with the usual soft takeover.
+- Group membership and settings are saved in templates and sessions (pad behaviour, like choke groups).
+
+Implementation notes:
+- Engine: a group id and a linked-controls mask per pad in LooperEngine; trigger / release / mute / solo
+  commands expand to every member inside the audio thread (like chokeOthers()).
+- Mixer.h / MixerPanel.h: relative fader and pan links; group tag on the strip.
+- Session.h: save `group` per pad and the groups' settings, next to `choke`.
+- SettingsWindow.h: new Groups tab.
+
+### Per-pad outputs (JACK / PipeWire)
+One stereo output per pad, so each pad can be patched to its own track in a DAW (e.g. Ardour) to capture a
+performance with the pads kept separate for editing and mixing afterwards.
+
+Decided 2026-10-25:
+- 16 extra stereo ports, pad_01_L / pad_01_R … pad_16_L / pad_16_R, alongside main, metronome and preview.
+  Not connected at startup.
+- A copy, not a reroute: every pad still plays on main as now, so what you hear doesn't change whether
+  or not anything is patched, and the main mix can be recorded alongside the pads.
+- Pre / Post fader, one setting for all pad outputs (default Post):
+  - Post: the pad after its effects, fader, pan and mute/solo, the same signal as the mixer strip's meter, so
+    mutes and fader moves during the performance are captured.
+  - Pre: the pad after its effects, before the fader, pan and mute/solo, for raw tracks to mix afterwards.
+- The live sound of the active pad (monitored input or instrument through its chain) goes to that pad's output
+  too, since it already goes through that pad's strip.
+- Metronome and preview are unchanged and never go to a pad output.
+- The whole feature is a setting (Settings > Audio, "Per-pad outputs", off by default) so the patchbay isn't
+  cluttered with 32 unused ports; switching it on or off reopens the device. Pre / Post changes at once.
+- JACK only, like the existing buses. On ALSA the setting is hidden.
+
+Implementation notes:
+- OutputBuses.h: numChannels becomes 6 + 32 when per-pad outputs are on; port names via
+  juce::jackOutputPortNames as now (cmake/PatchJuce.cmake).
+- LooperEngine: copy each pad's render buffer to its pair (before or after its strip) as well as summing into main.
+
 ## Ideas / smaller items
+- MIDI sync with a DAW (to explore): send MIDI clock and/or follow JACK transport so Indigo's tempo and grid
+  line up with Ardour's timeline when recording a performance through the per-pad outputs.
 - Plugin latency changed live (e.g. a lookahead setting in the plugin's editor) is only picked up when the
   chain is next sent (add / remove / move an effect); follow it as it changes.
 - Sessions: option to reopen the last session at startup; Ctrl+S / Ctrl+O shortcuts.
