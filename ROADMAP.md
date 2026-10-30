@@ -30,39 +30,6 @@ Implementation notes:
 - Session.h: save `group` per pad and the groups' settings, next to `choke`.
 - SettingsWindow.h: new Groups tab.
 
-### Outputs for a patchbay (JACK / PipeWire)
-Indigo's outputs are routed in an external JACK / PipeWire patchbay (qpwgraph, Carla, etc.), the same way as
-Ardour's: one Indigo node with a named port pair per source. Replaces the old "Headphone (cue) output" item: no
-in-app routing and no ALSA multi-output support (on ALSA everything stays mixed on outputs 1/2).
-
-Decided 2026-10-30:
-- Headphones: the metronome and the cue (file preview) have their own ports, so they can be patched to the
-  headphones only and never reach the main mix. Already built: metronome_L / metronome_R and preview_L / preview_R
-  next to main_L / main_R (OutputBuses.h); only main is connected at startup.
-- Per-pad outputs: one stereo port pair per pad, so each pad can be patched to its own track in a DAW (e.g. Ardour)
-  to capture a performance with the pads kept separate for editing and mixing afterwards.
-
-Per-pad outputs, decided 2026-10-25:
-- 16 extra stereo ports, pad_01_L / pad_01_R … pad_16_L / pad_16_R, alongside main, metronome and preview.
-  Not connected at startup.
-- A copy, not a reroute: every pad still plays on main as now, so what you hear doesn't change whether
-  or not anything is patched, and the main mix can be recorded alongside the pads.
-- Pre / Post fader, one setting for all pad outputs (default Post):
-  - Post: the pad after its effects, fader, pan and mute/solo, the same signal as the mixer strip's meter, so
-    mutes and fader moves during the performance are captured.
-  - Pre: the pad after its effects, before the fader, pan and mute/solo, for raw tracks to mix afterwards.
-- The live sound of the active pad (monitored input or instrument through its chain) goes to that pad's output
-  too, since it already goes through that pad's strip.
-- Metronome and preview are unchanged and never go to a pad output.
-- The whole feature is a setting (Settings > Audio, "Per-pad outputs", off by default) so the patchbay isn't
-  cluttered with 32 unused ports; switching it on or off reopens the device. Pre / Post changes at once.
-- JACK only, like the existing buses. On ALSA the setting is hidden.
-
-Implementation notes:
-- OutputBuses.h: numChannels becomes 6 + 32 when per-pad outputs are on; port names via
-  juce::jackOutputPortNames as now (cmake/PatchJuce.cmake).
-- LooperEngine: copy each pad's render buffer to its pair (before or after its strip) as well as summing into main.
-
 ## Ideas / smaller items
 - MIDI sync with a DAW (to explore): send MIDI clock and/or follow JACK transport so Indigo's tempo and grid
   line up with Ardour's timeline when recording a performance through the per-pad outputs.
@@ -208,3 +175,38 @@ Built 2026-10-23 (Panes.h): each pane has a hide button (top right of its tab
 bar) and a View menu toggle; hidden, it shrinks to a slim bar whose button brings it back. The dividers between the
 panes and the pads can be dragged. Pane visibility, sizes, tabs and the window size are remembered in
 ~/.config/Indigo/Layout.xml. The window now opens at 1100 x 900 (or as tall as the screen allows).
+
+### Outputs for a patchbay (JACK / PipeWire)
+Indigo's outputs are routed in an external JACK / PipeWire patchbay (qpwgraph, Carla, etc.), the same way as
+Ardour's: one Indigo node with a named port pair per source. Replaces the old "Headphone (cue) output" item: no
+in-app routing and no ALSA multi-output support (on ALSA everything stays mixed on outputs 1/2).
+
+Done 2026-10-30 (user tested per-pad outputs into Reaper, pre and post fader). Decided 2026-10-30:
+- Headphones: the metronome and the cue (file preview) have their own ports, so they can be patched to the
+  headphones only and never reach the main mix. Already built: metronome_L / metronome_R and preview_L / preview_R
+  next to main_L / main_R (OutputBuses.h); only main is connected at startup.
+- Per-pad outputs: one stereo port pair per pad, so each pad can be patched to its own track in a DAW (e.g. Ardour)
+  to capture a performance with the pads kept separate for editing and mixing afterwards.
+
+Per-pad outputs, decided 2026-10-25:
+- 16 extra stereo ports, pad_01_L / pad_01_R … pad_16_L / pad_16_R, alongside main, metronome and preview.
+  Not connected at startup.
+- A copy, not a reroute: every pad still plays on main as now, so what you hear doesn't change whether
+  or not anything is patched, and the main mix can be recorded alongside the pads.
+- Pre / Post fader, one setting for all pad outputs (default Post):
+  - Post: the pad after its effects, fader, pan and mute/solo, the same signal as the mixer strip's meter, so
+    mutes and fader moves during the performance are captured.
+  - Pre: the pad after its effects, before the fader, pan and mute/solo, for raw tracks to mix afterwards.
+- The live sound of the active pad (monitored input or instrument through its chain) goes to that pad's output
+  too, since it already goes through that pad's strip.
+- Metronome and preview are unchanged and never go to a pad output.
+- The whole feature is a setting (Settings > Audio, "Per-pad outputs", off by default) so the patchbay isn't
+  cluttered with 32 unused ports; switching it on or off reopens the device. Pre / Post changes at once.
+- JACK only, like the existing buses. On ALSA the setting is hidden.
+
+Built 2026-10-30:
+- OutputBuses.h: the pad ports follow main, metronome and preview (38 channels with per-pad outputs on); port names
+  via juce::jackOutputPortNames (cmake/PatchJuce.cmake), read when the JACK device is created.
+- LooperEngine::mixStrip copies each pad to its pair before or after the strip gains, as well as summing into main.
+- Settings in ~/.config/Indigo/Outputs.xml. Ticking the box reopens the device (restarts the clock, cancels a
+  recording in progress, and may drop patchbay connections to Indigo).

@@ -139,7 +139,8 @@ enum class MixerControl { volume, pan, mute, solo };     // a pad's mixer strip,
 // monitored input or an instrument goes through the active pad's strip too (like a DAW track). Mute keeps the pad running silently, so a muted loop stays in time. Changes ramp over
 // fadeSeconds so they don't click. Solo silences every pad that isn't soloed (the metronome and preview are never
 // affected). Volume and pan can follow a MIDI knob with soft takeover: after the UI sets a value, the knob has to
-// pass through it before it takes over, so nothing jumps.
+// pass through it before it takes over, so nothing jumps. With per-pad outputs (JACK), each pad is also copied to its
+// own output pair, before or after its strip (OutputBuses::padsPreFader).
 class LooperEngine : public juce::AudioSource,
                      public juce::MidiInputCallback,
                      public juce::AudioPlayHead

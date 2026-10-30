@@ -10,10 +10,6 @@
 #include "EffectsWindow.h"
 #include "Session.h"
 #include "OutputBuses.h"
-
-#if JUCE_LINUX && JUCE_JACK
-namespace juce { extern StringArray jackOutputPortNames; }   // cmake/PatchJuce.cmake
-#endif
 #include "FileBrowser.h"
 #include "MixerPanel.h"
 #include "Panes.h"
@@ -220,9 +216,9 @@ public:
 
         // Audio + MIDI (the device chosen in Settings > Audio last time, else the system default)
         // Under JACK: Indigo's own named outputs (see OutputBuses.h), set before any JACK device is created.
-       #if JUCE_LINUX && JUCE_JACK
-        juce::jackOutputPortNames = OutputBuses::portNames();
-       #endif
+        OutputBuses::perPad.store (OutputSettings::perPad());
+        OutputBuses::padsPreFader.store (OutputSettings::preFader());
+        OutputBuses::setJackPortNames();
         auto savedDevice = juce::XmlDocument::parse (audioStateFile());
         deviceManager.initialise (2, 2, savedDevice.get(), true);
         // The engine must be the mixer's first input: only that one sees the live buffer with the

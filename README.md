@@ -90,7 +90,8 @@ Each pad has a **volume fader**, **pan** knob, **level meter**, **M** (mute) and
 - **MIDI Mapping:** a note or CC (and channel) for each pad, REC, and every mixer control, with Learn buttons. Save
   mappings as named presets. Controllers plugged in while Indigo runs are picked up automatically.
 - **Audio:** ALSA or JACK, device, sample rate, buffer size and channels. Under JACK, the main mix, metronome and
-  preview have their own outputs, so you can route the click to your headphones.
+  preview have their own outputs, so you can route the click to your headphones. **Per-pad outputs** (JACK only) adds
+  an output pair for each pad, pre- or post-fader, to record a performance into a DAW with the pads on separate tracks.
 - **Browser:** the folder the browser starts in.
 
 ## Sessions and templates

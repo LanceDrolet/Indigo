@@ -3,6 +3,7 @@
 #include "LooperEngine.h"
 #include "MidiPresets.h"
 #include "FileBrowser.h"
+#include "OutputBuses.h"
 
 //==============================================================================
 // One line of the mapping table: what a pad, the REC toggle or a mixer control responds to. Edits go straight to the
@@ -330,13 +331,43 @@ private:
 };
 
 //==============================================================================
-// Audio page: JUCE's device selector (driver, device, sample rate, buffer size, channels). Changes apply
-// at once; MainComponent hears about them from the device manager and adapts (see audioDeviceChanged).
-class AudioSettingsPanel : public juce::Component
+// Per-pad outputs (Settings > Audio, JACK only; see OutputBuses.h), kept in ~/.config/Indigo/Outputs.xml.
+struct OutputSettings
+{
+    static juce::File file() { return MidiPresets::folder().getChildFile ("Outputs.xml"); }
+
+    static bool perPad()                { return load()->getBoolAttribute ("perPad", false); }
+    static bool preFader()              { return load()->getBoolAttribute ("preFader", false); }
+    static bool setPerPad (bool on)     { return set ("perPad", on); }
+    static bool setPreFader (bool on)   { return set ("preFader", on); }
+
+private:
+    static std::unique_ptr<juce::XmlElement> load()
+    {
+        auto xml = juce::XmlDocument::parse (file());
+        if (xml == nullptr || ! xml->hasTagName ("Outputs"))
+            xml = std::make_unique<juce::XmlElement> ("Outputs");
+        return xml;
+    }
+
+    static bool set (const char* name, bool value)
+    {
+        auto xml = load();
+        xml->setAttribute (name, value);
+        return MidiPresets::folder().createDirectory() && xml->writeTo (file());
+    }
+};
+
+//==============================================================================
+// Audio page: JUCE's device selector (driver, device, sample rate, buffer size, channels), and per-pad outputs under
+// JACK. Changes apply at once; MainComponent hears about them from the device manager and adapts (see audioDeviceChanged).
+class AudioSettingsPanel : public juce::Component,
+                           private juce::ChangeListener
 {
 public:
     explicit AudioSettingsPanel (juce::AudioDeviceManager& dm)
-        : selector (dm,
+        : deviceManager (dm),
+          selector (dm,
                     0, 2,           // inputs: none (no recording) up to one stereo pair
                     2, 2,           // outputs: one stereo pair
                     false, false,   // MIDI inputs are all enabled automatically; no MIDI output
@@ -345,22 +376,80 @@ public:
     {
         addAndMakeVisible (selector);
 
+        perPadButton.setTooltip ("Adds an output pair for each pad (pad_01_L / pad_01_R ...) to patch into a DAW, so a "
+                                 "performance can be recorded with the pads on separate tracks. The pads still play on "
+                                 "main as well. Changing this reopens the audio device.");
+        perPadButton.setToggleState (OutputBuses::perPad.load(), juce::dontSendNotification);
+        perPadButton.onClick = [this] { setPerPad (perPadButton.getToggleState()); };
+        addChildComponent (perPadButton);
+
+        tapCombo.addItem ("Post-fader", 1);
+        tapCombo.addItem ("Pre-fader", 2);
+        tapCombo.setTooltip ("Post-fader: each pad as you hear it, after its effects, fader, pan and mute / solo.\n"
+                             "Pre-fader: after its effects only, for raw tracks to mix afterwards.");
+        tapCombo.setSelectedId (OutputBuses::padsPreFader.load() ? 2 : 1, juce::dontSendNotification);
+        tapCombo.onChange = [this]
+        {
+            const bool pre = tapCombo.getSelectedId() == 2;
+            OutputBuses::padsPreFader.store (pre);
+            OutputSettings::setPreFader (pre);
+        };
+        addChildComponent (tapCombo);
+
         hintLabel.setText ("Changing the sample rate restarts the clock and cancels any recording in progress. "
                            "The Rec latency slider is reset to what the new device reports.",
                            juce::dontSendNotification);
         hintLabel.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.6f));
         addAndMakeVisible (hintLabel);
+
+        deviceManager.addChangeListener (this);
+        showOutputOptions();
     }
+
+    ~AudioSettingsPanel() override { deviceManager.removeChangeListener (this); }
 
     void resized() override
     {
         auto r = getLocalBounds().reduced (12);
         hintLabel.setBounds (r.removeFromBottom (40));
+
+        auto row = r.removeFromBottom (28);
+        perPadButton.setBounds (row.removeFromLeft (160));
+        tapCombo.setBounds (row.removeFromLeft (130).reduced (0, 2));
+        r.removeFromBottom (8);
+
         selector.setBounds (r);
     }
 
 private:
+    void changeListenerCallback (juce::ChangeBroadcaster*) override { showOutputOptions(); }
+
+    // Per-pad outputs are JACK ports, so they're only offered with a JACK device.
+    void showOutputOptions()
+    {
+        auto* dev = deviceManager.getCurrentAudioDevice();
+        const bool jack = dev != nullptr && dev->getTypeName() == "JACK";
+        perPadButton.setVisible (jack);
+        tapCombo.setVisible (jack);
+        tapCombo.setEnabled (perPadButton.getToggleState());
+    }
+
+    // The ports are made when the device is created, so it is closed and opened again with the new set.
+    void setPerPad (bool on)
+    {
+        OutputSettings::setPerPad (on);
+        OutputBuses::perPad.store (on);
+        OutputBuses::setJackPortNames();
+
+        deviceManager.closeAudioDevice();
+        deviceManager.restartLastAudioDevice();
+        showOutputOptions();
+    }
+
+    juce::AudioDeviceManager& deviceManager;
     juce::AudioDeviceSelectorComponent selector;
+    juce::ToggleButton perPadButton { "Per-pad outputs" };
+    juce::ComboBox tapCombo;
     juce::Label hintLabel;
 };
 

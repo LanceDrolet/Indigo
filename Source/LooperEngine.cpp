@@ -327,6 +327,14 @@ void LooperEngine::mixStrip (int index, bool wasSounding, bool sounded, bool any
         if (! sounded)
             return;
     }
+
+    // Per-pad outputs (JACK): a copy of the pad, before or after the strip.
+    const auto padBus = OutputBuses::padChannels (index, out.getNumChannels());
+    const bool preFader = OutputBuses::padsPreFader.load (std::memory_order_relaxed);
+
+    if (preFader && ! padBus.isEmpty())
+        for (int ch = 0; ch < 2; ++ch)
+            out.copyFrom (padBus.getStart() + ch, destStart, padOut, ch, 0, n);
     else
     {
         ramp.left.setTargetValue (left);
@@ -354,6 +362,10 @@ void LooperEngine::mixStrip (int index, bool wasSounding, bool sounded, bool any
         auto& peak = s.peak[ch];
         peak.store (juce::jmax (peak.load (std::memory_order_relaxed), padOut.getMagnitude (ch, 0, n)), std::memory_order_relaxed);
     }
+
+    if (! preFader && ! padBus.isEmpty())
+        for (int ch = 0; ch < 2; ++ch)
+            out.copyFrom (padBus.getStart() + ch, destStart, padOut, ch, 0, n);
 
     const auto bus = OutputBuses::channels (OutputBuses::main, out.getNumChannels());
 
