@@ -2,24 +2,6 @@
 
 ## Planned
 
-### Headphone (cue) output
-A second stereo output for the performer only, so the metronome and file previews go to the
-headphones and never reach the main mix.
-
-- Settings: choose the main output pair and the headphone pair (e.g. outputs 1/2 and 3/4 on a
-  multi-output interface).
-- Per-source routing: metronome and preview default to headphones only; pads default to main.
-  Consider a "pads to headphones too" option so the performer hears the mix in their cans.
-- Input monitoring (the Monitor toggle) should probably follow the headphone output as well.
-- Needs an interface with 4+ outputs. With only 2, fall back to today's behaviour (everything on 1/2).
-- Settings > Audio currently limits outputs to one stereo pair (AudioSettingsPanel in SettingsWindow.h);
-  raise the selector's max outputs to 4 for this.
-- Implementation note: open the device with 4 output channels and have the engine render the
-  cue sources into channels 3/4 instead of 1/2; the preview mixer input moves to the cue bus.
-- Partly done: under JACK, Indigo already has separate named outputs (main, metronome, preview; see
-  OutputBuses.h) that can be connected to the headphones in a patchbay. What's left is the ALSA /
-  multi-output-interface case above.
-
 ### Pad groups
 Link several pads so one move of a control applies to all of them, e.g. one fader for a drum kit spread
 over four pads, or muting all the backing loops at once. Separate from choke groups: a pad can be in both.
@@ -48,11 +30,19 @@ Implementation notes:
 - Session.h: save `group` per pad and the groups' settings, next to `choke`.
 - SettingsWindow.h: new Groups tab.
 
-### Per-pad outputs (JACK / PipeWire)
-One stereo output per pad, so each pad can be patched to its own track in a DAW (e.g. Ardour) to capture a
-performance with the pads kept separate for editing and mixing afterwards.
+### Outputs for a patchbay (JACK / PipeWire)
+Indigo's outputs are routed in an external JACK / PipeWire patchbay (qpwgraph, Carla, etc.), the same way as
+Ardour's: one Indigo node with a named port pair per source. Replaces the old "Headphone (cue) output" item: no
+in-app routing and no ALSA multi-output support (on ALSA everything stays mixed on outputs 1/2).
 
-Decided 2026-10-25:
+Decided 2026-10-30:
+- Headphones: the metronome and the cue (file preview) have their own ports, so they can be patched to the
+  headphones only and never reach the main mix. Already built: metronome_L / metronome_R and preview_L / preview_R
+  next to main_L / main_R (OutputBuses.h); only main is connected at startup.
+- Per-pad outputs: one stereo port pair per pad, so each pad can be patched to its own track in a DAW (e.g. Ardour)
+  to capture a performance with the pads kept separate for editing and mixing afterwards.
+
+Per-pad outputs, decided 2026-10-25:
 - 16 extra stereo ports, pad_01_L / pad_01_R … pad_16_L / pad_16_R, alongside main, metronome and preview.
   Not connected at startup.
 - A copy, not a reroute: every pad still plays on main as now, so what you hear doesn't change whether
