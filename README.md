@@ -7,7 +7,7 @@ and is built with JUCE 8.
 ## The window
 
 - **Pads** (centre): a 4x4 grid. Click a pad, or hit its mapped MIDI note or CC, to play it.
-- **Transport bar** (top): tempo, quantize, metronome, REC, Monitor and the input's FX, and recording latency.
+- **Transport bar** (top): Play / Stop, tempo, quantize, metronome, REC, Monitor and the input's FX, and recording latency.
 - **Browser** (left pane): your audio files. Double-click a file to preview it, or tick auto-preview to hear each
   file as you select it. Drag a file onto a pad to load it (you can also drop files from your desktop).
 - **Mixer** (bottom pane): one strip per pad.
@@ -26,7 +26,12 @@ Right-click a pad to set how it plays:
 | **Gate (hold)** | Plays while the pad is held and stops when you let go. |
 
 **Quantize** sets the grid that loops start and stop on (1 bar, 1 beat, 1/8, 1/16, or off). The **metronome**
-clicks on the beat.
+clicks on the beat while the transport plays.
+
+**Play / Stop** runs the transport. Indigo opens stopped. Pressing Play starts it on bar 1, and so does pressing a
+loop pad or starting a take while it's stopped: that pad starts right away, on the downbeat. **Stop** stops every
+pad, cancels anything queued and rewinds to bar 1. It's locked while a take or overdub is in progress.
+One-shot and gate pads play whether the transport is running or not. Right-click Play to map it to MIDI.
 
 Also in the pad's right-click menu:
 - **Loop length:** how many beats the sound spans. Loops are stretched to the project tempo without changing pitch;
@@ -87,7 +92,7 @@ Each pad has a **volume fader**, **pan** knob, **level meter**, **M** (mute) and
 ## MIDI and settings
 
 **Edit > Settings...** has three tabs:
-- **MIDI Mapping:** a note or CC (and channel) for each pad, REC, and every mixer control, with Learn buttons. Save
+- **MIDI Mapping:** a note or CC (and channel) for each pad, REC, Play / Stop, and every mixer control, with Learn buttons. Save
   mappings as named presets. Controllers plugged in while Indigo runs are picked up automatically.
 - **Audio:** ALSA or JACK, device, sample rate, buffer size and channels. Under JACK, the main mix, metronome and
   preview have their own outputs, so you can route the click to your headphones. **Per-pad outputs** (JACK only) adds

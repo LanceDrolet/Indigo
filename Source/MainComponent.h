@@ -128,6 +128,13 @@ public:
         addAndMakeVisible (bottomDivider);
 
         // Transport controls
+        playButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff2e7d32));
+        playButton.setTooltip ("Start or stop the transport. Stop rewinds to bar 1; it's locked while recording. "
+                               "Pressing a loop pad or starting a take while stopped also starts it. Right-click to map it to MIDI.");
+        playButton.onClick = [this] { engine.setPlaying (! engine.isPlaying()); };
+        playButton.onRightClick = [this] { showMidiLearnMenu (engine, LooperEngine::playControl, playButton); };
+        addAndMakeVisible (playButton);
+
         tempoSlider.setRange (40.0, 240.0, 0.1);
         tempoSlider.setValue (120.0, juce::dontSendNotification);
         tempoSlider.setTextValueSuffix (" BPM");
@@ -304,6 +311,8 @@ public:
         metroButton.setBounds (bar.removeFromRight (110));
         quantizeBox.setBounds (bar.removeFromRight (110));
         quantizeLabel.setBounds (bar.removeFromRight (70));
+        playButton.setBounds (bar.removeFromLeft (80));
+        bar.removeFromLeft (10);
         tempoSlider.setBounds (bar);
 
         auto bar2 = r.removeFromTop (36).reduced (10, 4);
@@ -1070,7 +1079,6 @@ private:
             mixerPanel.refresh();
         }
 
-        beats.setBeat (engine.getBeatInBar());
 
         // REC mode can be toggled from the controller, so follow the engine (only when it changes,
         // otherwise a click would flicker back before the engine has applied it).
@@ -1084,6 +1092,14 @@ private:
         // The tempo is locked while a take / overdub is in progress or being merged.
         const bool busy = engine.isRecordingBusy();
         tempoSlider.setEnabled (! busy);
+
+        // The transport also starts from a pad or the controller, and can't be stopped while recording.
+        const bool playing = engine.isPlaying();
+        playButton.setToggleState (playing, juce::dontSendNotification);
+        playButton.setButtonText (playing ? "Stop" : "Play");
+        playButton.setEnabled (! (playing && busy));
+        playButton.setLearning (engine.getLearnTarget() == LooperEngine::playControl);
+        beats.setBeat (playing ? engine.getBeatInBar() : -1.0);     // no beat lit while stopped
         if (! busy && ! tempoDirty && std::abs (tempoSlider.getValue() - engine.getTempo()) > 0.05)
             tempoSlider.setValue (engine.getTempo(), juce::dontSendNotification);
 
@@ -1418,6 +1434,7 @@ private:
     juce::ToggleButton autoPreviewButton { "Auto-preview selected file" };
 
     PadGrid grid;
+    Learnable<juce::TextButton> playButton { "Play" };
     juce::Slider tempoSlider { juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight };
     juce::ComboBox quantizeBox;
     juce::Label quantizeLabel;

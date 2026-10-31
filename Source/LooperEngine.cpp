@@ -174,6 +174,12 @@ void LooperEngine::setRecordMode (bool on)
     push (c);
 }
 
+void LooperEngine::setPlaying (bool on)
+{
+    Command c; c.type = Command::Type::setTransport; c.value = on ? 1.0 : 0.0;
+    push (c);
+}
+
 bool LooperEngine::setEffects (int target, std::unique_ptr<FxChain> chain)
 {
     if (chain != nullptr && chain->slots.empty())
@@ -384,7 +390,7 @@ juce::Optional<juce::AudioPlayHead::PositionInfo> LooperEngine::getPosition() co
     info.setTimeInSeconds ((double) transportPos / sampleRate.load());
     info.setPpqPosition (ppq);
     info.setPpqPositionOfLastBarStart (std::floor (ppq / beatsPerBar) * beatsPerBar);
-    info.setIsPlaying (true);
+    info.setIsPlaying (running);
     return info;
 }
 
@@ -536,6 +542,9 @@ void LooperEngine::requestTrigger (PadState& p, float velocity, juce::int64 when
             return;
         }
 
+        if (! running && ! p.playing())         // starts the transport, with the pad on bar 1
+            when = startTransport (when);
+
         p.pending   = p.playing() ? Pending::stop : Pending::start;
         p.pendingAt = quantizeTime (when);
         p.pendingGain = loopVelocity;
@@ -636,6 +645,60 @@ void LooperEngine::toggleRecordMode() noexcept
     recordMode.store (! recordMode.load());
 }
 
+// Starts the clock so that `at` becomes 0, the downbeat of bar 1. Returns `at` on the new clock.
+juce::int64 LooperEngine::startTransport (juce::int64 at) noexcept
+{
+    if (running)
+        return at;
+
+    shiftClock (at);
+    running = true;
+    stopAt = -1;
+    transportOn.store (true);
+    return 0;
+}
+
+// Drops everything queued and stops every pad at `at`. The clock rewinds to bar 1 at the end of the block.
+void LooperEngine::stopTransport (juce::int64 at) noexcept
+{
+    if (! running || anyRecordingBusy())
+        return;
+
+    for (auto& p : pads)
+        cancelPending (p);
+
+    for (auto& p : pads)
+    {
+        if (p.playing())
+        {
+            p.pending = Pending::stop;
+            p.pendingAt = at;
+        }
+    }
+
+    running = false;
+    stopAt = at;
+    transportOn.store (false);
+}
+
+// Moves the clock, and the playback scheduled on it, back by `by` samples. Nothing is recording when it moves
+// (stopped, or just starting from stopped), so takes and overdubs are left alone.
+void LooperEngine::shiftClock (juce::int64 by) noexcept
+{
+    transportPos -= by;
+
+    for (auto& p : pads)
+    {
+        p.startAt -= by;
+
+        if (p.pending != Pending::none)
+            p.pendingAt -= by;
+    }
+
+    if (stopAt >= 0)
+        stopAt -= by;
+}
+
 void LooperEngine::padPressed (PadState& p, float velocity, juce::int64 when)
 {
     activePad.store (indexOf (p), std::memory_order_relaxed);
@@ -713,6 +776,9 @@ void LooperEngine::armTake (PadState& p, juce::int64 when)
         return;
     }
 
+    if (! running)                                      // the take starts the transport, on bar 1
+        when = startTransport (when);
+
     cancelPending (p);
 
     juce::int64 k = 0;
@@ -749,6 +815,9 @@ void LooperEngine::armOverdub (PadState& p, juce::int64 when)
 
     layer->length = len;
     layer->idealLength = p.clip->idealLength;
+
+    if (! running)
+        when = startTransport (when);
 
     const double grid = recGridSamples();
     juce::int64 k = 0;
@@ -944,6 +1013,13 @@ void LooperEngine::apply (const Command& c)
         return;
     }
 
+    if (c.type == Command::Type::setTransport)
+    {
+        if (c.value > 0.5) startTransport (transportPos);
+        else               stopTransport (transportPos);
+        return;
+    }
+
     if (c.type == Command::Type::setTempo)
     {
         if (anyRecordingBusy())     // recordings are locked to the tempo they were made at
@@ -1099,6 +1175,7 @@ void LooperEngine::apply (const Command& c)
 
         case Command::Type::setTempo:
         case Command::Type::setRecordMode:
+        case Command::Type::setTransport:
         case Command::Type::setFx:         break;     // handled above
     }
 }
@@ -1309,7 +1386,7 @@ void LooperEngine::renderMetronome (juce::AudioBuffer<float>& out, int destStart
     const double spb = samplesPerBeat();
     const auto chans = OutputBuses::channels (OutputBuses::metronome, out.getNumChannels());
 
-    auto beat = (juce::int64) std::ceil ((double) blockStart / spb);
+    auto beat = juce::jmax ((juce::int64) 0, (juce::int64) std::ceil ((double) blockStart / spb));   // none before bar 1
     auto nextOffset = [&] { return (int) (std::llround ((double) beat * spb) - blockStart); };
     int nextOff = nextOffset();
 
@@ -1366,14 +1443,13 @@ void LooperEngine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
         cmdFifo.finishedRead (n1 + n2);
     }
 
-    const juce::int64 blockStart = transportPos;
-    const juce::int64 blockEnd   = blockStart + n;
-
-    // 2. MIDI, timestamped on the transport so quantizing is sample-accurate
+    // 2. MIDI, timestamped on the transport so quantizing is sample-accurate. A press that starts the transport
+    //    moves the clock, so this reads transportPos for each message.
     midiBuffer.clear();
     collector.removeNextBlockOfMessages (midiBuffer, n);
 
     const int recCode = bindings[(size_t) recControl].load();
+    const int playCode = bindings[(size_t) playControl].load();
 
     for (const auto meta : midiBuffer)
     {
@@ -1428,6 +1504,18 @@ void LooperEngine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
             continue;
         }
 
+        if (MidiBinding::matches (playCode, code, channel))
+        {
+            if (press)
+            {
+                const auto at = transportPos + meta.samplePosition;
+
+                if (running) stopTransport (at);
+                else         startTransport (at);
+            }
+            continue;
+        }
+
         if (press)
             pressMixerButton (code, channel);
 
@@ -1438,10 +1526,13 @@ void LooperEngine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
 
             auto& p = pads[(size_t) i];
 
-            if (press) padPressed (p, velocity, blockStart + meta.samplePosition);
+            if (press) padPressed (p, velocity, transportPos + meta.samplePosition);
             else       releaseNow (p);
         }
     }
+
+    const juce::int64 blockStart = transportPos;
+    const juce::int64 blockEnd   = blockStart + n;
 
     // 3. The performance channel, to the instruments
     routePerformanceMidi (n);
@@ -1564,9 +1655,10 @@ void LooperEngine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
 
     recBusy.store (anyRecordingBusy(), std::memory_order_relaxed);
 
-    // 6. Metronome (on its own outputs under JACK)
-    if (metronomeOn.load())
-        renderMetronome (out, info.startSample, n, blockStart);
+    // 6. Metronome (on its own outputs under JACK), while the transport runs
+    if (metronomeOn.load() && (running || stopAt >= 0))
+        renderMetronome (out, info.startSample, running ? n : (int) juce::jlimit ((juce::int64) 0, (juce::int64) n, stopAt - blockStart),
+                         blockStart);
 
     // 7. Input monitoring, unless the active pad already played it
     if (monitoring && ! inputHeard)
@@ -1577,8 +1669,15 @@ void LooperEngine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
             out.addFrom (ch, info.startSample, inputScratch, juce::jmin (ch, 1), 0, n);
     }
 
-    // 8. Advance the clock
+    // 8. Advance the clock. Stopped, it rests at bar 1.
     transportPos = blockEnd;
+
+    if (! running)
+    {
+        shiftClock (transportPos);
+        stopAt = -1;
+        clickLen = 0;       // a click cut off by Stop doesn't finish on the next Play
+    }
     beatInBar.store (std::fmod ((double) transportPos / samplesPerBeat(), (double) beatsPerBar),
                      std::memory_order_relaxed);
 }

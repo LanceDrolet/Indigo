@@ -91,7 +91,10 @@ enum class MixerControl { volume, pan, mute, solo };     // a pad's mixer strip,
 //==============================================================================
 // Real-time engine: master clock + 16 pads, with quantized recording and overdub.
 //
-// Master clock: a sample counter (transportPos) advanced once per audio block.
+// Master clock: a sample counter (transportPos) advanced once per audio block while the transport is playing.
+// Stopped, it stays at 0 (bar 1). Play, or a loop pad / REC take pressed while stopped, starts it so that the press
+// lands exactly on bar 1. Stop cancels whatever is queued, fades every pad out and rewinds to bar 1; it is refused
+// while a take / overdub is in progress (like the tempo). One-shot and gate pads play whether or not it runs.
 // Loop pads launch/stop on quantize grid lines; one-shot and gate pads fire immediately.
 // Triggers are scheduled as "pending" actions at an absolute transport sample, and the
 // render loop splits the block at that sample, so starts are sample-accurate. Stops fade out over a
@@ -170,14 +173,15 @@ public:
         double ideal = 0.0;      // exact (fractional) loop period in samples
     };
 
-    // MIDI binding / learn targets: the pads (0..numPads-1), the REC toggle, each pad's mixer controls, and the
-    // mixer's Mute all / Unmute all buttons.
+    // MIDI binding / learn targets: the pads (0..numPads-1), the REC toggle, each pad's mixer controls, the
+    // mixer's Mute all / Unmute all buttons, and Play / Stop.
     static constexpr int recControl = numPads;
     static constexpr int numMixerControls = 4;
     static constexpr int mixerControlBase = recControl + 1;
     static constexpr int muteAllControl = mixerControlBase + numPads * numMixerControls;
     static constexpr int unmuteAllControl = muteAllControl + 1;
-    static constexpr int numBindingTargets = unmuteAllControl + 1;
+    static constexpr int playControl = unmuteAllControl + 1;      // the transport's Play / Stop toggle
+    static constexpr int numBindingTargets = playControl + 1;
 
     static constexpr int mixerTarget (int pad, MixerControl c) noexcept
     {
@@ -279,6 +283,7 @@ public:
     void clearPad (int pad);       // stop it, drop its clip, cancel any take/overdub on it
     void setTempo (double bpm);
     void setRecordMode (bool on);
+    void setPlaying (bool on);     // the transport (a Stop is ignored while isRecordingBusy())
 
     // Replaces the effects of a pad (or monitorTarget). Every plugin in the chain must already be prepared
     // at getSampleRate() / getBlockSize(); see getFxPrepareLock(). An empty chain (or nullptr) removes them.
@@ -313,6 +318,7 @@ public:
 
     PadStatus getPadStatus (int pad) const noexcept  { return (PadStatus) status[(size_t) pad].load(); }
     bool isRecordMode() const noexcept               { return recordMode.load(); }
+    bool isPlaying() const noexcept                  { return transportOn.load(); }
     bool isRecordingBusy() const noexcept            { return recBusy.load(); }   // tempo is locked while true
     double getTempo() const noexcept                 { return bpm.load(); }
     double getBeatInBar() const noexcept             { return beatInBar.load(); }   // 0 .. beatsPerBar
@@ -347,7 +353,7 @@ private:
 
     struct Command
     {
-        enum class Type { assignClip, trigger, release, setMode, setChoke, setTempo, setRecordMode, clear, setFx } type = Type::trigger;
+        enum class Type { assignClip, trigger, release, setMode, setChoke, setTempo, setRecordMode, setTransport, clear, setFx } type = Type::trigger;
         int pad = 0;
         int group = 0;
         Clip* clip = nullptr;
@@ -421,6 +427,9 @@ private:
     void fadeOut (PadState&);
     int  indexOf (const PadState& p) const noexcept  { return (int) (&p - pads.data()); }
     void toggleRecordMode() noexcept;
+    juce::int64 startTransport (juce::int64 at) noexcept;
+    void stopTransport (juce::int64 at) noexcept;
+    void shiftClock (juce::int64 by) noexcept;
     bool anyRecordingBusy() const noexcept;
 
     void recordPress (PadState&, juce::int64 when);
@@ -480,6 +489,8 @@ private:
 
     // Audio-thread-only state
     juce::int64 transportPos = 0;
+    bool running = false;            // the transport is playing
+    juce::int64 stopAt = -1;         // where this block's Stop landed (the metronome ends there), -1 = none
     double audioBpm = 120.0;
     double clickPhase = 0.0, clickFreq = 1000.0;
     int clickPos = 0, clickLen = 0;
@@ -510,6 +521,7 @@ private:
     std::atomic<bool> metronomeOn { false };
     std::atomic<bool> monitorOn { false };
     std::atomic<bool> recordMode { false };      // written by the audio thread only
+    std::atomic<bool> transportOn { false };     // `running`, for the UI
     std::atomic<bool> recBusy { false };
     std::atomic<int> recordLatency { 0 };
     std::atomic<int> instrumentLatency { 0 };
