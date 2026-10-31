@@ -227,7 +227,11 @@ public:
         OutputBuses::padsPreFader.store (OutputSettings::preFader());
         OutputBuses::setJackPortNames();
         auto savedDevice = juce::XmlDocument::parse (audioStateFile());
-        deviceManager.initialise (2, 2, savedDevice.get(), true);
+        const bool haveSavedInput = keepSavedInputOnlyIfPresent (savedDevice.get());
+        // No input unless one was chosen and is still there: JUCE's fallback would otherwise open the
+        // system default input, and under JACK/PipeWire auto-connect it -- which can be a sink Indigo
+        // itself plays into (a feedback loop in the graph).
+        deviceManager.initialise (haveSavedInput ? 2 : 0, 2, savedDevice.get(), true);
         // The engine must be the mixer's first input: only that one sees the live buffer with the
         // audio input in it (the engine copies the input out before clearing it).
         mixer.addInputSource (&engine, false);
@@ -950,6 +954,40 @@ private:
 
     //==== Audio device ====
     static juce::File audioStateFile() { return MidiPresets::folder().getChildFile ("AudioDevice.xml"); }
+
+    // If the saved input device (e.g. an unplugged USB interface) no longer exists, blank it in
+    // the saved setup so Indigo starts with no input. Returns true if a saved input is present.
+    bool keepSavedInputOnlyIfPresent (juce::XmlElement* xml)
+    {
+        if (xml == nullptr || ! xml->hasTagName ("DEVICESETUP"))
+            return false;
+
+        const auto attr = xml->getStringAttribute ("audioDeviceName").isNotEmpty() ? "audioDeviceName"
+                                                                                   : "audioInputDeviceName";
+        const auto name = xml->getStringAttribute (attr);
+        if (name.isEmpty())
+            return false;
+
+        for (auto* type : deviceManager.getAvailableDeviceTypes())
+        {
+            if (type->getTypeName() != xml->getStringAttribute ("deviceType"))
+                continue;
+
+            type->scanForDevices();
+            if (type->getDeviceNames (true).contains (name))
+                return true;
+        }
+
+        if (juce::String (attr) == "audioDeviceName")
+        {
+            // Old single-device format: keep the output, drop the input
+            xml->setAttribute ("audioOutputDeviceName", name);
+            xml->removeAttribute ("audioDeviceName");
+        }
+        xml->setAttribute ("audioInputDeviceName", juce::String());
+        xml->setAttribute ("audioDeviceInChans", "0");
+        return false;
+    }
 
     void saveAudioState()
     {
