@@ -1,5 +1,7 @@
 # Indigo roadmap
 
+User-facing behaviour is in the README. This file keeps what's next, and the decisions behind what's built.
+
 ## Planned
 
 ### Pad groups
@@ -31,182 +33,128 @@ Implementation notes:
 - SettingsWindow.h: new Groups tab.
 
 ## Ideas / smaller items
-- MIDI sync with a DAW (to explore): send MIDI clock and/or follow JACK transport so Indigo's tempo and grid
-  line up with Ardour's timeline when recording a performance through the per-pad outputs.
+- More sync: follow JACK transport. MIDI clock and MTC out are built (see Done).
 - Plugin latency changed live (e.g. a lookahead setting in the plugin's editor) is only picked up when the
   chain is next sent (add / remove / move an effect); follow it as it changes.
 - Sessions: option to reopen the last session at startup; Ctrl+S / Ctrl+O shortcuts.
 - Preview: volume control; remember the auto-preview checkbox between sessions.
+- Plugin menus: sort by type (distortion, reverb, etc.) instead of by manufacturer.
+- Mixer: Mute all / Unmute all are provisional and may be reworked.
 - Windows build: in CMakeLists.txt make JUCE_JACK=1 Linux-only and add JUCE_ASIO=1 for WIN32 with a
   cache variable for the Steinberg ASIO SDK path (SDK downloaded separately; GPLv3 or Steinberg licence).
   WASAPI needs nothing. Check MSVC warnings. Note: classic WinMM MIDI is single-client, so a controller
   held by a DAW won't reach Indigo.
-- Don't sort plugins by manufacturer name. Sort by type (distortion, reverb, etc...)
 
 ## Done
-- Pad grid with one-shot / loop / gate modes; quantized master clock, metronome
-- Pitch-preserving loop stretch to the project tempo
-- Live recording and overdub with latency compensation; input monitoring
-- Pad Clear (right-click menu)
-- Menu bar; Settings window with per-pad MIDI note/CC mapping, MIDI learn, named presets
-- File browser preview (double-click, or auto-preview on selection)
-- File browser navigation (Back / Up / Home / Browse..., typed path) and a starting folder (Settings > Browser, or right-click a folder), or reopen the last folder
-- Settings > Audio tab (ALSA or JACK; device, sample rate, buffer size, channels), remembered between runs; a device
-  change re-reads the input channels and latency and resamples loaded pads to a new rate
-- Pad modes restored at startup; templates (pad modes, *.indigotemplate) and sessions (tempo, quantize,
-  modes, lengths, sounds; takes saved as WAVs beside the *.indigo file); save prompt for unsaved takes
-- Choke groups 1–8 (right-click > Choke group; coloured tag on the pad; saved in templates and sessions): starting a
-  pad stops the others in its group on the same sample, so loop swaps land on one grid line. All stops fade
-  out over 5 ms.
-- MIDI channels: each pad / REC mapping has a channel (Any or 1-16; Learn picks up the controller's channel),
-  so two controllers sending the same notes can drive different pads. Settings > MIDI Mapping has a
-  Performance channel that the controls ignore (saved with the preset). Old presets load as "Any".
-- MIDI hot-plug: a controller plugged in while Indigo is running is enabled automatically (2026-10-23).
+
+### Pads and recording
+- Pad grid with one-shot / loop / gate modes; quantized master clock, metronome.
+- Play / Stop transport (2026-10-31).
+- Pitch-preserving loop stretch to the project tempo.
+- Live recording and overdub with latency compensation; input monitoring.
+- REC ends with the recording; Rec Lock keeps it on.
+- A loop length set on an empty pad: the recording loops at that length, each pass layered on the last.
+- Pad Clear Sound / Clear Sound & Length / Wipe (right-click menu).
+- Choke groups 1–8: starting a pad stops the others in its group on the same sample, so loop swaps land on one
+  grid line. All stops fade out over 5 ms.
+
+### Sessions, browser, settings
+- Menu bar; Settings window.
+- Settings > Audio (ALSA or JACK; device, sample rate, buffer size, channels), remembered between runs. A device
+  change re-reads the input channels and latency and resamples loaded pads to the new rate. If the saved input
+  device is missing, Indigo starts with no input.
+- Templates (*.indigotemplate: pad behaviour) and sessions (*.indigo: tempo, quantize, modes, lengths, sounds; takes
+  saved as WAVs beside it). Save prompt for unsaved takes.
+- File browser: preview (double-click, or auto-preview on selection), navigation (Back / Up / Home / Browse...,
+  typed path), a starting folder or reopen the last one.
+
+### MIDI
+- Per-pad note / CC mapping, MIDI learn, named presets.
+- Channels: each mapping has a channel (Any or 1-16; Learn picks up the controller's), so two controllers sending
+  the same notes can drive different pads. A Performance channel is ignored by the controls and saved with the
+  preset. Old presets load as "Any".
+- Hot-plug: a controller plugged in while Indigo is running is enabled automatically.
 
 ### VST3 / LV2 plugins and MIDI pads
-Done 2026-10-24 (user testing continues).
+Done 2026-10-24. Hosting comes from juce_audio_processors. VST3 and LV2 only: Steinberg no longer licenses the
+VST2 SDK.
+- Scanning in a child process, so a crashing plugin can't take Indigo down. Plugin manager window (Edit > Plugins)
+  with each plugin enabled or disabled.
+- A chain per pad (instrument and effects), and one on the input. Saved in templates and sessions with each
+  plugin's state; a plugin missing on session load is removed from the pad and the user is told which.
+- Pad chains are on the pad's OUTPUT, so effects can be changed at any time and recordings are dry. Only the input
+  chain is recorded. Instrument pads record the instrument dry, before their effects. (Pad chains started out on
+  the recording path; moved 2026-10-24.)
+- Active pad: exactly one, the last pad pressed, clicked, hit, or triggered by a MIDI note (blue outline). With
+  Monitor on you hear the input through its chain.
+- MIDI on the Performance channel goes to the active pad's instrument. A pad with an instrument can record that
+  instrument as a take and then be triggered like any other pad.
+- Audition isn't a separate mode: an empty active pad passes live MIDI / audio through its chain.
+- Idle chains use no CPU: a stopped pad's chain runs until its effect tail dies away, then stops.
+- Plugin latency: recordings are shifted by the input chain's latency; a pad plays its clip early by its own
+  effects' latency, so it stays on the beat. You still hear yourself late, so the effects window warns.
+- LV2 dynamic manifests are off (cmake/PatchJuce.cmake): with them on, JUCE loads every naspro-bridged LADSPA/DSSI
+  plugin into Indigo at startup and a bad one crashed it. So bridged LADSPA/DSSI plugins aren't offered.
 
-VST3 and LV2 only: Steinberg no longer licenses the VST2 SDK. Hosting comes from JUCE's juce_audio_processors
-(JUCE_PLUGINHOST_VST3=1, JUCE_PLUGINHOST_LV2=1).
-
-Decided:
-- Scan folders: a set of directories Indigo scans for effects and instruments. Scan in a child process so a
-  crashing plugin can't take Indigo down.
-- Plugin manager window: the scanned list, with each plugin enabled or disabled.
-- Per-pad chain: a pop-up for each pad to pick and re-order its instrument and effects.
-- The input monitor gets a chain too.
-- Active pad: exactly one at a time, the last pad pressed, clicked, hit, or triggered by a MIDI note.
-- Performance channel (see MIDI channels above): MIDI on it is ignored by Indigo's controls; it is routed to the
-  active pad's instrument.
-- MIDI pad: a pad with an instrument assigned. Its output can be recorded as a take and then triggered like
-  any other pad (the instrument is the pad's record source).
-- Audition mode: not a separate mode, just the active pad when it has no file or recording. Live MIDI / audio
-  goes through its chain so you can hear it before recording.
-- LV2 dynamic manifests are switched off (cmake/PatchJuce.cmake): with them on, JUCE loads every naspro-bridged
-  LADSPA/DSSI plugin into Indigo at startup and a bad one crashed it. So bridged LADSPA/DSSI plugins aren't offered.
-- Missing plugin on session load: it is removed from the pad (tell the user which ones).
-- Idle chains use no CPU: a stopped pad's chain runs until its effect tail dies away, then stops processing.
-- Plugins that add latency (lookahead etc.): recordings are compensated for the input chain, and a pad plays early
-  by its own effects' latency; you still hear yourself late, so the effects window warns.
-
-Built in this order:
-1. Scanning + plugin manager window. (Done 2026-10-19, Edit > Plugins; user confirmed VST3 + LV2 scans incl. LV2 instruments.)
-2. Per-pad and monitor effect chains (per-pad render buffers; load/unload via the command queue; tails;
-   saved in sessions with each plugin's state). (Built 2026-10-19: pad right-click > Effects, FX button by
-   Monitor; chains saved in templates incl. the startup one, and in sessions; plugins get Indigo's tempo via a
-   play head; latency shown in the effects window.)
-   Changed 2026-10-19 at the user's request: effects are RECORDED. A pad's chain shapes the input going into
-   that pad (input chain first, then the pad's), takes/overdubs capture the wet result, and loops play back as
-   recorded (so loaded samples no longer go through pad effects). With Monitor on you hear the input through
-   the active pad's chain (last pad pressed; blue outline). Recordings are shifted by the chains' latency.
-   Use case: chorus pad for rhythm guitar, then a distortion pad for the lead over it.
-   Changed again 2026-10-24: a pad's chain is on its OUTPUT. The pad's playback (loaded file or take) runs
-   through it live, so effects can be changed at any time, and recordings are dry; only the input's own chain is
-   recorded. Instrument pads record the instrument dry, before their effects. Recordings are shifted by the input
-   chain's latency; a pad whose effects add latency plays its clip that much early, so it stays on the beat.
-3. Active pad, instrument pads, performance-channel routing, audition mode. (Instrument pads and
-   performance-channel routing are in the engine; the user tested a VSTi 2026-10-23 and it works well.
-   Audition mode isn't a separate feature: an empty pad that is the active pad is auditioning; confirmed
-   working by the user 2026-10-23.)
-4. Latency warning. (The effects window shows each plugin's
-   added delay and warns with the total; a pad without an instrument counts the input chain too; LV2 latency now read correctly, so
-   recordings are compensated for it. Confirmed by the user 2026-10-23.)
-
-Fixes after testing:
+Quirks found in testing:
 - Plugin editors that briefly report a 128x128 placeholder while being embedded (e.g. Black Pearl Drumkit) no longer
-  open as a tiny window in the top-left corner (2026-10-24).
-- VST3 plugins scanned from a moduleinfo.json (e.g. the Vox Samples effects) have no channel counts; they are now
-  offered in the effect / instrument menus instead of being hidden. A yabridge plugin asking for a restart from its own
-  thread no longer stops a debug build (assertion patched out in cmake/PatchJuce.cmake) (2026-10-24).
+  open as a tiny window in the top-left corner.
+- VST3 plugins scanned from a moduleinfo.json (e.g. the Vox Samples effects) have no channel counts; they are offered
+  in the menus anyway. A yabridge plugin asking for a restart from its own thread no longer stops a debug build
+  (assertion patched out in cmake/PatchJuce.cmake).
 - Plugins with extra buses (multi-outs, sidechains) keep them switched on: AI_Bass_Mini (16 stereo outs, via yabridge)
-  crashed Indigo when they were switched off. A VST3's main output is used; an LV2's outputs are all summed, as before
-  (2026-10-24).
+  crashed Indigo when they were switched off. A VST3's main output is used; an LV2's outputs are all summed.
 
-### Output Mixer
-Samples and loops are rarely normalised to the same level, so each pad needs its own output controls.
-
-Done 2026-10-24 (user testing continues). Decided 2026-10-23:
-- A strip per pad (16): volume fader, pan, Mute, Solo, level meter.
-- Volume and pan are playback-only: recordings capture the signal before them, so moving a fader never
-  changes a take.
-- Pan is constant-power, so a centred pad doesn't drop in level.
-- Mute keeps the pad running silently (a loop stays in time and comes back in sync); it acts at once, not on
-  the grid, with the 5 ms fade so it doesn't click.
-- Any number of pads can be soloed at once.
-- Mute all / Unmute all buttons. Unmute all also clears every solo (one press back to normal). Provisional:
-  may be reworked later.
-- Metronome and preview are never affected by mute or solo.
-- Choke groups are independent of mute: a muted pad still chokes the others in its group.
-- Level meters show each pad after its fader.
-- Every mixer control can be mapped to MIDI CC (in Settings, plus Learn on a right-click of the control), with
-  soft takeover: a control only follows the knob once the knob passes its current value, so nothing jumps.
-- Mixer settings (levels, pan, mute, solo) are saved in sessions only, not templates.
-- Normalise on load (a setting, on/off): loaded files are matched by RMS level with a peak limit so nothing
-  clips. Loaded files only; recorded takes are left alone.
-- Placement: in a tabbed, hideable panel along the bottom of the window, below the pads and the file
-  browser (see "Tabbed view panes").
-
-Built 2026-10-23 (Mixer.h, MixerPanel.h; engine side in LooperEngine). Engine tested with a console harness (strip gain/pan, mute ramp and loop timing, solo, Mute/Unmute all, chokes,
-soft takeover, MIDI learn, recording before the strip, session and preset round trips). Details settled while
-building:
-- Fader: cubic taper from silence to +6 dB, 0 dB at about 80 % travel; double-click resets to 0 dB (pan: centre).
-  CC 0-127 maps straight onto the fader travel; pan CC 64 is centre.
-- Only clip playback goes through the strip. The live sound of the monitored input or an instrument through a pad's
-  chain does not (so mute / solo never cut what you're playing). Revisit if instrument pads should follow their fader.
-  Changed 2026-10-24: the live sound now goes through the active pad's strip too (like a DAW track), after its
-  effects, so the fader, pan, mute and solo apply to it.
-- A pad that is muted or soloed out is dimmed on the grid with a MUTED tag.
-- Mixer MIDI mappings are saved with the MIDI presets; Settings > MIDI Mapping lists them below the pads (volume and
-  pan only take CCs). Right-click any mixer control: MIDI Learn / Clear.
-- Normalise on load: target -18 dBFS RMS over the audible parts (10 ms windows below -50 dB ignored), peaks kept
-  under -1 dBFS, at most +24 dB of boost. The checkbox is on the mixer panel (saved in ~/.config/Indigo/Mixer.xml).
-  A session remembers which pads were normalised and does it again when it's opened.
-- Clearing a pad keeps its strip settings; File > New Session resets the mixer.
+### Output mixer
+Done 2026-10-24 (Mixer.h, MixerPanel.h; engine side in LooperEngine).
+- A strip per pad: volume fader, pan, Mute, Solo, level meter (after the fader). Mute all / Unmute all; Unmute all
+  also clears every solo.
+- Recordings capture the signal before the strip, so moving a fader never changes a take.
+- The live sound of the active pad goes through its strip too (like a DAW track), after its effects.
+- Fader: cubic taper from silence to +6 dB, 0 dB at about 80 % travel; double-click resets. Pan is constant-power, so
+  a centred pad doesn't drop in level. CC 0-127 maps straight onto the travel; pan CC 64 is centre.
+- Mute keeps the pad running silently (a loop comes back in sync); it acts at once, not on the grid, with the 5 ms
+  fade. A muted or soloed-out pad is dimmed on the grid with a MUTED tag.
+- Metronome and preview are never affected by mute or solo. A muted pad still chokes the others in its group.
+- Every control can be mapped to MIDI (saved with the MIDI presets), with soft takeover: a control only follows the
+  knob once the knob passes its current value, so nothing jumps.
+- Mixer settings are saved in sessions only, not templates. Clearing a pad keeps its strip; File > New Session resets
+  the mixer.
+- Normalise on load (checkbox on the panel, saved in ~/.config/Indigo/Mixer.xml): loaded files only, target -18 dBFS
+  RMS over the audible parts (10 ms windows below -50 dB ignored), peaks under -1 dBFS, at most +24 dB of boost. A
+  session remembers which pads were normalised and does it again when it's opened.
 
 ### Tabbed view panes
-Done 2026-10-24 (user testing continues).
-
-- The left pane (file browser today) and a new bottom pane (Output Mixer first) are both tabbed, so more
-  views can be added to either later.
-- Each pane can be hidden or minimised to give the pad grid more room.
-- The file browser stays on the left; it does not move to the bottom.
-
-Built 2026-10-23 (Panes.h): each pane has a hide button (top right of its tab
-bar) and a View menu toggle; hidden, it shrinks to a slim bar whose button brings it back. The dividers between the
-panes and the pads can be dragged. Pane visibility, sizes, tabs and the window size are remembered in
-~/.config/Indigo/Layout.xml. The window now opens at 1100 x 900 (or as tall as the screen allows).
+Done 2026-10-24 (Panes.h).
+- A tabbed left pane (file browser) and bottom pane (mixer), so more views can be added to either later.
+- Each has a hide button and a View menu toggle; hidden, it shrinks to a slim bar. The dividers can be dragged.
+- Visibility, sizes, tabs and the window size are remembered in ~/.config/Indigo/Layout.xml. The window opens at
+  1100 x 900 (or as tall as the screen allows).
 
 ### Outputs for a patchbay (JACK / PipeWire)
-Indigo's outputs are routed in an external JACK / PipeWire patchbay (qpwgraph, Carla, etc.), the same way as
-Ardour's: one Indigo node with a named port pair per source. Replaces the old "Headphone (cue) output" item: no
-in-app routing and no ALSA multi-output support (on ALSA everything stays mixed on outputs 1/2).
+Done 2026-10-30. Outputs are routed in an external patchbay (qpwgraph, Carla, etc.), like Ardour's: one Indigo node
+with a named port pair per source. No in-app routing and no ALSA multi-output: on ALSA everything stays on outputs 1/2.
+- main, metronome and preview have their own ports, so the click and the cue can go to headphones only and never
+  reach the main mix. Only main is connected at startup.
+- Per-pad outputs (Settings > Audio, off by default, so the patchbay isn't cluttered): 16 extra pairs, pad_01_L /
+  pad_01_R … pad_16_R, not connected at startup. Port names reach JACK through juce::jackOutputPortNames
+  (cmake/PatchJuce.cmake).
+- A copy, not a reroute: every pad still plays on main, whether or not anything is patched.
+- Pre / Post fader, one setting for all (default Post), changes at once. Post is the same signal as the strip's
+  meter; Pre is after the pad's effects, before fader, pan and mute/solo. The active pad's live sound goes to its
+  output too.
+- Ticking the box reopens the device: it restarts the clock, cancels a recording in progress, and may drop patchbay
+  connections to Indigo. Settings in ~/.config/Indigo/Outputs.xml.
 
-Done 2026-10-30 (user tested per-pad outputs into Reaper, pre and post fader). Decided 2026-10-30:
-- Headphones: the metronome and the cue (file preview) have their own ports, so they can be patched to the
-  headphones only and never reach the main mix. Already built: metronome_L / metronome_R and preview_L / preview_R
-  next to main_L / main_R (OutputBuses.h); only main is connected at startup.
-- Per-pad outputs: one stereo port pair per pad, so each pad can be patched to its own track in a DAW (e.g. Ardour)
-  to capture a performance with the pads kept separate for editing and mixing afterwards.
-
-Per-pad outputs, decided 2026-10-25:
-- 16 extra stereo ports, pad_01_L / pad_01_R … pad_16_L / pad_16_R, alongside main, metronome and preview.
-  Not connected at startup.
-- A copy, not a reroute: every pad still plays on main as now, so what you hear doesn't change whether
-  or not anything is patched, and the main mix can be recorded alongside the pads.
-- Pre / Post fader, one setting for all pad outputs (default Post):
-  - Post: the pad after its effects, fader, pan and mute/solo, the same signal as the mixer strip's meter, so
-    mutes and fader moves during the performance are captured.
-  - Pre: the pad after its effects, before the fader, pan and mute/solo, for raw tracks to mix afterwards.
-- The live sound of the active pad (monitored input or instrument through its chain) goes to that pad's output
-  too, since it already goes through that pad's strip.
-- Metronome and preview are unchanged and never go to a pad output.
-- The whole feature is a setting (Settings > Audio, "Per-pad outputs", off by default) so the patchbay isn't
-  cluttered with 32 unused ports; switching it on or off reopens the device. Pre / Post changes at once.
-- JACK only, like the existing buses. On ALSA the setting is hidden.
-
-Built 2026-10-30:
-- OutputBuses.h: the pad ports follow main, metronome and preview (38 channels with per-pad outputs on); port names
-  via juce::jackOutputPortNames (cmake/PatchJuce.cmake), read when the JACK device is created.
-- LooperEngine::mixStrip copies each pad to its pair before or after the strip gains, as well as summing into main.
-- Settings in ~/.config/Indigo/Outputs.xml. Ticking the box reopens the device (restarts the clock, cancels a
-  recording in progress, and may drop patchbay connections to Indigo).
+### MIDI sync out
+Built 2026-11 (user testing continues; SyncOutput.h, Mtc.h, LooperEngine::sendSync; Settings > Sync, saved in
+~/.config/Indigo/Sync.xml).
+- A virtual MIDI port named "Indigo", created only while MIDI clock or MTC is on.
+- MIDI clock: Start from bar 1, 24 clocks per beat, Stop.
+- MTC: a Full Frame at 00:00:00:00 on bar 1, then quarter frames at 24, 25, 29.97 drop or 30 fps. It has its own
+  sample count: transportPos is rescaled by a tempo change, and timecode has to keep real time.
+- The port sends in queue order, so clock and quarter frames are merged by time in each block.
+- No Song Position after Stop: Start already means "from the top", and a DAW that locates on both can trip over it.
+- Sent from a thread of its own, timed for when the audio is heard (the output half of the latency), plus a
+  sync offset (one for both).
+- Hot-plug leaves the port alone: Indigo's own sync would only come straight back in.
