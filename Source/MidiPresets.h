@@ -15,15 +15,6 @@ struct MidiMapping
     std::array<MidiBinding, numMixerTargets> mixer;     // [target - LooperEngine::mixerControlBase]
     int performanceChannel = 0;     // 1..16, 0 = none (see LooperEngine::setPerformanceChannel)
 
-    // Pads on consecutive notes from `firstNote`; REC unmapped.
-    static MidiMapping chromatic (int firstNote = 36)
-    {
-        MidiMapping m;
-        for (int i = 0; i < LooperEngine::numPads; ++i)
-            m.pads[(size_t) i] = MidiBinding::note (firstNote + i);
-        return m;
-    }
-
     static MidiMapping fromEngine (const LooperEngine& e)
     {
         MidiMapping m;

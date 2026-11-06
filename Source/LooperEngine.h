@@ -310,7 +310,6 @@ public:
 
     // Round-trip latency (output + input) that recordings are shifted by.
     void setRecordLatency (int samples) noexcept     { recordLatency.store (juce::jmax (0, samples)); }
-    int  getRecordLatency() const noexcept           { return recordLatency.load(); }
     // What instrument recordings are shifted by: from rendering a block to hearing it.
     void setInstrumentLatency (int samples) noexcept { instrumentLatency.store (juce::jmax (0, samples)); }
     void setNumInputChannels (int n) noexcept        { numInputChannels.store (juce::jlimit (0, 2, n)); }

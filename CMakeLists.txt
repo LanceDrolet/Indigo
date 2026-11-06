@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 include(FetchContent)
 FetchContent_Declare(JUCE
     GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
-    GIT_TAG        8.0.4   # bump to the latest 8.x release
+    GIT_TAG        8.0.4   # after a bump, check PatchJuce.cmake: a patch whose text no longer matches silently does nothing
     GIT_SHALLOW    TRUE
     PATCH_COMMAND  ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_LIST_DIR}/cmake/PatchJuce.cmake)
 
