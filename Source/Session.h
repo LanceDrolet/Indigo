@@ -17,7 +17,7 @@ inline PadMode padModeFromName (const juce::String& s)
 }
 
 //==============================================================================
-// A template: how each pad behaves (one-shot / loop / gate, choke group, effects), without any sounds. The template in use is
+// A template: how each pad behaves (one-shot / loop / gate, choke group, an empty pad's loop length, effects), without any sounds. The template in use is
 // kept in ~/.config/Indigo/CurrentTemplate.xml so pad modes survive a restart; named templates are
 // *.indigotemplate files (default folder ~/.config/Indigo/Templates).
 struct PadTemplate
@@ -26,6 +26,7 @@ struct PadTemplate
 
     std::array<PadMode, LooperEngine::numPads> modes {};
     std::array<int, LooperEngine::numPads> chokes {};       // 0 = no choke group
+    std::array<int, LooperEngine::numPads> lengths {};      // beats an empty pad records at, 0 = auto
     std::shared_ptr<const juce::XmlElement> effects;        // PadEffects::toXml(); null = none
 
     static juce::File folder()          { return MidiPresets::folder().getChildFile ("Templates"); }
@@ -41,6 +42,7 @@ struct PadTemplate
             el->setAttribute ("index", i);
             el->setAttribute ("mode", padModeName (modes[(size_t) i]));
             el->setAttribute ("choke", chokes[(size_t) i]);
+            el->setAttribute ("beats", lengths[(size_t) i]);
         }
 
         if (effects != nullptr)
@@ -63,6 +65,7 @@ struct PadTemplate
             {
                 t.modes[(size_t) i]  = padModeFromName (el->getStringAttribute ("mode"));
                 t.chokes[(size_t) i] = juce::jlimit (0, LooperEngine::numChokeGroups, el->getIntAttribute ("choke", 0));
+                t.lengths[(size_t) i] = juce::jmax (0, el->getIntAttribute ("beats", 0));
             }
         }
 
@@ -98,7 +101,7 @@ struct Session
     {
         PadMode mode = PadMode::oneShot;
         int choke = 0;          // 0 = no choke group
-        int beats = 4;
+        int beats = 0;          // loop length; on an empty pad, what it records at (0 = auto)
         juce::String name;      // shown on the pad
         juce::File file;        // empty = no sound
         bool normalised = false;    // the sound was normalised when it was loaded (Normalise on load); do it again
@@ -126,7 +129,7 @@ struct Session
     std::unique_ptr<juce::XmlElement> toXml (const juce::File& sessionFile) const
     {
         auto xml = std::make_unique<juce::XmlElement> ("IndigoSession");
-        xml->setAttribute ("version", 1);
+        xml->setAttribute ("version", 2);
         xml->setAttribute ("bpm", bpm);
         xml->setAttribute ("quantize", quantize);
 
@@ -168,6 +171,7 @@ struct Session
         s = {};
         s.bpm = xml.getDoubleAttribute ("bpm", 120.0);
         s.quantize = juce::jlimit (0, (int) Quantize::sixteenth, xml.getIntAttribute ("quantize", (int) Quantize::bar));
+        const int version = xml.getIntAttribute ("version", 1);
 
         const auto base = sessionFile.getParentDirectory();
 
@@ -180,7 +184,6 @@ struct Session
             auto& p = s.pads[(size_t) i];
             p.mode  = padModeFromName (el->getStringAttribute ("mode"));
             p.choke = juce::jlimit (0, LooperEngine::numChokeGroups, el->getIntAttribute ("choke", 0));
-            p.beats = juce::jmax (1, el->getIntAttribute ("beats", 4));
             p.name  = el->getStringAttribute ("name");
             p.normalised = el->getBoolAttribute ("normalised", false);
             p.fader = Mixer::dbToFader ((float) el->getDoubleAttribute ("volumeDb", 0.0));
@@ -191,6 +194,11 @@ struct Session
             const auto path = el->getStringAttribute ("file");
             if (path.isNotEmpty())
                 p.file = base.getChildFile (path);      // handles absolute paths too
+
+            // Before version 2 an empty pad's length meant nothing, and was always written as 4.
+            p.beats = path.isNotEmpty() ? juce::jmax (1, el->getIntAttribute ("beats", 4))
+                    : version >= 2      ? juce::jmax (0, el->getIntAttribute ("beats", 0))
+                                        : 0;
         }
 
         if (auto* fx = xml.getChildByName ("Effects"))

@@ -162,6 +162,12 @@ void LooperEngine::clearPad (int pad)
     push (c);
 }
 
+void LooperEngine::setEmptyLength (int pad, int beats)
+{
+    Command c; c.type = Command::Type::setEmptyLength; c.pad = pad; c.value = beats;
+    push (c);
+}
+
 void LooperEngine::setTempo (double newBpm)
 {
     Command c; c.type = Command::Type::setTempo; c.value = newBpm;
@@ -171,6 +177,12 @@ void LooperEngine::setTempo (double newBpm)
 void LooperEngine::setRecordMode (bool on)
 {
     Command c; c.type = Command::Type::setRecordMode; c.value = on ? 1.0 : 0.0;
+    push (c);
+}
+
+void LooperEngine::setRecordLock (bool on)
+{
+    Command c; c.type = Command::Type::setRecordLock; c.value = on ? 1.0 : 0.0;
     push (c);
 }
 
@@ -640,9 +652,24 @@ void LooperEngine::fadeOut (PadState& p)
     p.fadeLeft = p.fadeLen;
 }
 
+// While locked, REC swaps the lock for plain REC mode, like its button.
 void LooperEngine::toggleRecordMode() noexcept
 {
-    recordMode.store (! recordMode.load());
+    recordMode.store (! recordMode.load() || recordLock.load());
+    recordLock.store (false);
+}
+
+void LooperEngine::toggleRecordLock() noexcept
+{
+    const bool on = ! recordLock.load();
+    recordLock.store (on);
+    recordMode.store (on);
+}
+
+void LooperEngine::recordingEnded() noexcept
+{
+    if (! recordLock.load())
+        recordMode.store (false);
 }
 
 // Starts the clock so that `at` becomes 0, the downbeat of bar 1. Returns `at` on the new clock.
@@ -718,7 +745,7 @@ void LooperEngine::recordPress (PadState& p, juce::int64 when)
 {
     if (p.recActive)
     {
-        if (p.recPromoted || p.recStopAt >= 0)
+        if (p.recStopAt >= 0)
             return;                                     // already ending
 
         if (when < p.recStartAt)                        // tapped again before it began: cancel
@@ -747,6 +774,7 @@ void LooperEngine::recordPress (PadState& p, juce::int64 when)
         juce::int64 k = 0;
         lineAtOrAfter (when, p.odGrid, k);
         p.odStopAt = (juce::int64) std::llround ((double) juce::jmax (k, p.odStartK + 1) * p.odGrid);
+        recordingEnded();
         return;
     }
 
@@ -769,8 +797,9 @@ void LooperEngine::armTake (PadState& p, juce::int64 when)
     const double spb  = samplesPerBeat();
     const int perLine = juce::jmax (1, (int) std::llround (grid / spb));
     const int maxLines = (int) std::floor ((double) (c->audio.getNumSamples() - 1) / grid);
+    const bool wraps = p.clip == nullptr && p.emptyBeats > 0;
 
-    if (maxLines < 1)
+    if (maxLines < 1 || (wraps && std::ceil (loopSamples (p.emptyBeats)) > (double) c->audio.getNumSamples()))
     {
         retire (c);
         return;
@@ -794,7 +823,15 @@ void LooperEngine::armTake (PadState& p, juce::int64 when)
     p.recAutoK = k + maxLines;
     p.recAutoAt = (juce::int64) std::llround ((double) p.recAutoK * grid);
     p.recPromoted = false;
+    p.recWraps = wraps;
     p.recActive = true;
+
+    if (wraps)
+    {
+        setTakeLength (p, p.emptyBeats);
+        p.pending = Pending::recFinal;
+        p.pendingAt = p.recStartAt;
+    }
 }
 
 void LooperEngine::armOverdub (PadState& p, juce::int64 when)
@@ -830,15 +867,22 @@ void LooperEngine::armOverdub (PadState& p, juce::int64 when)
     p.odActive = true;
 }
 
+void LooperEngine::setTakeLength (PadState& p, int beats)
+{
+    p.recBeats = beats;
+    p.recIdeal = loopSamples (beats);
+    p.recLen = juce::jmin (p.recClip->audio.getNumSamples(), (int) std::ceil (p.recIdeal));
+}
+
 void LooperEngine::scheduleRecStop (PadState& p, juce::int64 stopK)
 {
     p.recStopAt = (juce::int64) std::llround ((double) stopK * p.recGrid);
-    p.recBeats = (int) ((stopK - p.recStartK) * p.recBeatsPerLine);
+    recordingEnded();
 
-    // Same expression the UI uses for a loop's ideal length, so both sides agree on the sample count.
-    p.recIdeal = (double) p.recBeats * 60.0 / audioBpm * sampleRate.load();
-    p.recLen = juce::jmin (p.recClip->audio.getNumSamples(), (int) std::ceil (p.recIdeal));
+    if (p.recWraps)     // already looping, at its set length
+        return;
 
+    setTakeLength (p, (int) ((stopK - p.recStartK) * p.recBeatsPerLine));
     p.pending = Pending::recFinal;
     p.pendingAt = p.recStopAt;
 }
@@ -876,7 +920,17 @@ void LooperEngine::cancelRecording (PadState& p)
     if (! p.recActive)
         return;
 
-    if (! p.recPromoted)
+    // A looping take that has started is the pad's clip, but the UI hasn't heard of it: the pad goes back to empty.
+    if (p.recPromoted && p.recWraps)
+    {
+        p.clip = nullptr;
+        p.active = false;
+        p.fadeLeft = 0;
+        p.pos = 0;
+        p.lagDebt = 0.0;
+    }
+
+    if (! p.recPromoted || p.recWraps)
         retire (p.recClip);
 
     if (p.pending == Pending::recFinal)
@@ -915,6 +969,12 @@ void LooperEngine::captureTake (PadState& p, const juce::AudioBuffer<float>* inp
     if (! p.recActive || input == nullptr || p.recClip == nullptr)
         return;
 
+    if (p.recWraps)
+    {
+        sumIntoLoop (p, *p.recClip, *input, n, blockStart, p.recStartAt, p.recStopAt);
+        return;
+    }
+
     const juce::int64 k0 = blockStart - (juce::int64) inputLatency (p) - p.recStartAt;
     const int iStart = (int) juce::jlimit ((juce::int64) 0, (juce::int64) n, -k0);
     const int iEnd   = (int) juce::jlimit ((juce::int64) 0, (juce::int64) n, (juce::int64) p.recLen - k0);
@@ -926,20 +986,27 @@ void LooperEngine::captureTake (PadState& p, const juce::AudioBuffer<float>* inp
         p.recClip->audio.copyFrom (ch, (int) (k0 + iStart), *input, ch, iStart, iEnd - iStart);
 }
 
-// Input at transport time T is added at the loop position that was audible at T - latency.
 void LooperEngine::captureOverdub (PadState& p, const juce::AudioBuffer<float>* input, int n, juce::int64 blockStart)
 {
     if (! p.odActive || input == nullptr || p.layer == nullptr || p.clip == nullptr)
         return;
 
-    const int len = p.layer->length;
+    sumIntoLoop (p, *p.layer, *input, n, blockStart, p.odStartAt, p.odStopAt);
+}
+
+// Input at transport time T, for `from` <= T - latency < `to` (-1 = no end yet), is added to `dest` at the loop
+// position that was audible at T - latency.
+void LooperEngine::sumIntoLoop (const PadState& p, Clip& dest, const juce::AudioBuffer<float>& input, int n,
+                                juce::int64 blockStart, juce::int64 from, juce::int64 to)
+{
+    const int len = dest.length;
     if (len <= 0)
         return;
 
     const juce::int64 heard0 = blockStart - (juce::int64) inputLatency (p);   // heard time of input sample 0
-    const int iStart = (int) juce::jlimit ((juce::int64) 0, (juce::int64) n, p.odStartAt - heard0);
-    const int iEnd   = p.odStopAt >= 0 ? (int) juce::jlimit ((juce::int64) 0, (juce::int64) n, p.odStopAt - heard0)
-                                       : n;
+    const int iStart = (int) juce::jlimit ((juce::int64) 0, (juce::int64) n, from - heard0);
+    const int iEnd   = to >= 0 ? (int) juce::jlimit ((juce::int64) 0, (juce::int64) n, to - heard0) : n;
+
     if (iEnd <= iStart)
         return;
 
@@ -950,15 +1017,15 @@ void LooperEngine::captureOverdub (PadState& p, const juce::AudioBuffer<float>* 
 
     int k = (int) std::llround (phase);
 
-    float* dst[2] = { p.layer->audio.getWritePointer (0), p.layer->audio.getWritePointer (1) };
+    float* dst[2] = { dest.audio.getWritePointer (0), dest.audio.getWritePointer (1) };
 
     for (int i = iStart; i < iEnd; ++i)
     {
         if (k >= len)
             k -= len;
 
-        dst[0][k] += input->getSample (0, i);
-        dst[1][k] += input->getSample (1, i);
+        dst[0][k] += input.getSample (0, i);
+        dst[1][k] += input.getSample (1, i);
         ++k;
     }
 }
@@ -968,7 +1035,10 @@ void LooperEngine::finishRecording (int index, PadState& p, juce::int64 blockEnd
 {
     const juce::int64 latency = inputLatency (p);
 
-    if (p.recActive && p.recPromoted && blockEnd - latency - p.recStartAt >= p.recLen)
+    const bool takeDone = p.recWraps ? p.recStopAt >= 0 && blockEnd - latency >= p.recStopAt
+                                     : blockEnd - latency - p.recStartAt >= p.recLen;
+
+    if (p.recActive && p.recPromoted && takeDone)
     {
         Event e;
         e.type = Event::Type::recorded;
@@ -1009,6 +1079,14 @@ void LooperEngine::apply (const Command& c)
 {
     if (c.type == Command::Type::setRecordMode)
     {
+        recordMode.store (c.value > 0.5);
+        recordLock.store (false);
+        return;
+    }
+
+    if (c.type == Command::Type::setRecordLock)
+    {
+        recordLock.store (c.value > 0.5);
         recordMode.store (c.value > 0.5);
         return;
     }
@@ -1160,6 +1238,7 @@ void LooperEngine::apply (const Command& c)
         case Command::Type::release:  releaseNow (p); break;
         case Command::Type::setMode:  p.mode = c.mode; cancelPending (p); break;
         case Command::Type::setChoke: p.chokeGroup = juce::jlimit (0, numChokeGroups, c.group); break;
+        case Command::Type::setEmptyLength: p.emptyBeats = juce::jmax (0, (int) c.value); break;
 
         case Command::Type::clear:
             cancelRecording (p);        // a take that already became the pad's clip is retired below
@@ -1175,6 +1254,7 @@ void LooperEngine::apply (const Command& c)
 
         case Command::Type::setTempo:
         case Command::Type::setRecordMode:
+        case Command::Type::setRecordLock:
         case Command::Type::setTransport:
         case Command::Type::setFx:         break;     // handled above
     }
@@ -1450,6 +1530,7 @@ void LooperEngine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
 
     const int recCode = bindings[(size_t) recControl].load();
     const int playCode = bindings[(size_t) playControl].load();
+    const int recLockCode = bindings[(size_t) recLockControl].load();
 
     for (const auto meta : midiBuffer)
     {
@@ -1500,6 +1581,14 @@ void LooperEngine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
         {
             if (press)
                 toggleRecordMode();
+
+            continue;
+        }
+
+        if (MidiBinding::matches (recLockCode, code, channel))
+        {
+            if (press)
+                toggleRecordLock();
 
             continue;
         }
@@ -1562,7 +1651,7 @@ void LooperEngine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
         auto& p = pads[(size_t) i];
 
         // A take that is about to fill its buffer ends itself on the last line that fits.
-        if (p.recActive && ! p.recPromoted && p.recStopAt < 0 && p.recAutoAt <= blockEnd + n)
+        if (p.recActive && ! p.recPromoted && ! p.recWraps && p.recStopAt < 0 && p.recAutoAt <= blockEnd + n)
             scheduleRecStop (p, p.recAutoK);
 
         // Playback goes through the pad's effects and mixer strip (padOut), unless the block is too big for them.
@@ -1645,7 +1734,8 @@ void LooperEngine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
 
         PadStatus s = PadStatus::idle;
 
-        if (p.recActive && ! p.recPromoted)   s = blockEnd <= p.recStartAt ? PadStatus::recQueued : PadStatus::recording;
+        if (p.recActive && (! p.recPromoted || p.recWraps))
+                                              s = blockEnd <= p.recStartAt ? PadStatus::recQueued : PadStatus::recording;
         else if (p.odActive)                  s = blockEnd <= p.odStartAt  ? PadStatus::overdubQueued : PadStatus::overdubbing;
         else if (p.pending != Pending::none)  s = PadStatus::queued;
         else if (p.playing())                 s = PadStatus::playing;

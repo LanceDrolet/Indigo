@@ -165,9 +165,16 @@ public:
         // Recording controls
         recButton.setClickingTogglesState (true);
         recButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffc62828));
-        recButton.setTooltip ("Record mode: tap an empty pad to record a take, tap a playing loop to overdub");
+        recButton.setTooltip ("Record mode: tap an empty pad to record a take, tap a playing loop to overdub. "
+                              "It switches off when the recording ends.");
         recButton.onClick = [this] { engine.setRecordMode (recButton.getToggleState()); };
         addAndMakeVisible (recButton);
+
+        recLockButton.setClickingTogglesState (true);
+        recLockButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffc62828));
+        recLockButton.setTooltip ("Record mode that stays on after a recording ends, until you switch it off");
+        recLockButton.onClick = [this] { engine.setRecordLock (recLockButton.getToggleState()); };
+        addAndMakeVisible (recLockButton);
 
         monitorButton.setTooltip ("Hear the input through the app. Use headphones: with speakers and a mic it will feed back.");
         monitorButton.onClick = [this] { engine.setMonitor (monitorButton.getToggleState()); };
@@ -195,7 +202,7 @@ public:
             p.onPressed      = [this] (int pad) { engine.triggerPad (pad); };
             p.onReleased     = [this] (int pad) { engine.releasePad (pad); };
             p.onFileAssigned = [this] (int pad, const juce::File& f) { assignFile (pad, f); };
-            p.onCleared      = [this] (int pad) { clearPad (pad); };
+            p.onCleared      = [this] (int pad, PadClear what) { clearPad (pad, what); saveCurrentTemplate(); };
             p.onEffects      = [this] (int pad) { showEffects (pad); };
 
             p.onModeChanged = [this] (int pad, PadMode m)
@@ -213,11 +220,12 @@ public:
             p.onLengthChanged = [this] (int pad, int numBeats)
             {
                 auto& s = sources[(size_t) pad];
-                s.beats = numBeats > 0 ? numBeats : guessBeats (s);
-                grid.pad (pad).setLengthBeats (s.beats);
+                setPadLength (pad, numBeats > 0 || s.audio == nullptr ? numBeats : guessBeats (s));
 
                 if (s.mode == PadMode::loop)
                     sendToEngine (pad, true);
+
+                saveCurrentTemplate();
             };
         }
 
@@ -321,6 +329,8 @@ public:
 
         auto bar2 = r.removeFromTop (36).reduced (10, 4);
         recButton.setBounds (bar2.removeFromLeft (80));
+        bar2.removeFromLeft (4);
+        recLockButton.setBounds (bar2.removeFromLeft (80));
         bar2.removeFromLeft (8);
         monitorButton.setBounds (bar2.removeFromLeft (90));
         monitorFxButton.setBounds (bar2.removeFromLeft (36));
@@ -360,7 +370,7 @@ private:
         PadMode mode = PadMode::oneShot;
         int choke = 0;             // choke group, 0 = none
         double nameBpm = 0.0;      // tempo parsed from the file name ("..._95bpm_..."), 0 if none
-        int beats = 4;             // loop length in beats
+        int beats = 0;             // loop length in beats; on an empty pad, what it records at (0 = auto)
         int generation = 0;        // bumped on every request so stale stretch results are dropped
         bool mergeInFlight = false;     // an overdub merge is being built; re-stretches wait for it
         bool restretchPending = false;  // a re-stretch was deferred or refused; resent from timerCallback
@@ -546,6 +556,7 @@ private:
         {
             t.modes[(size_t) i]  = sources[(size_t) i].mode;
             t.chokes[(size_t) i] = sources[(size_t) i].choke;
+            t.lengths[(size_t) i] = sources[(size_t) i].audio == nullptr ? sources[(size_t) i].beats : 0;
         }
         t.effects = padEffects.toXml();
         return t;
@@ -559,6 +570,9 @@ private:
                 setPadMode (i, t.modes[(size_t) i]);
 
             setChokeGroup (i, t.chokes[(size_t) i]);
+
+            if (sources[(size_t) i].audio == nullptr)
+                setPadLength (i, t.lengths[(size_t) i]);
         }
 
         reportMissingEffects (padEffects.fromXml (t.effects.get()));
@@ -690,6 +704,9 @@ private:
                 setPadMode (i, p.mode);
 
             setChokeGroup (i, p.choke);
+
+            if (p.file == juce::File())
+                setPadLength (i, p.beats);
 
             engine.setFader (i, p.fader);
             engine.setPan (i, p.pan);
@@ -939,6 +956,7 @@ private:
         const bool canRecord = haveInput || padEffects.hasAnyInstrument();
 
         recButton.setEnabled (canRecord);
+        recLockButton.setEnabled (canRecord);
         recButton.setButtonText (canRecord ? "REC" : "No input");
         monitorButton.setEnabled (haveInput);
 
@@ -1118,12 +1136,14 @@ private:
         }
 
 
-        // REC mode can be toggled from the controller, so follow the engine (only when it changes,
-        // otherwise a click would flicker back before the engine has applied it).
-        if (engine.isRecordMode() != lastRecordMode)
+        // REC mode can be toggled from the controller, and ends with a recording, so follow the engine (only
+        // when it changes, otherwise a click would flicker back before the engine has applied it).
+        if (engine.isRecordMode() != lastRecordMode || engine.isRecordLocked() != lastRecordLock)
         {
             lastRecordMode = engine.isRecordMode();
-            recButton.setToggleState (lastRecordMode, juce::dontSendNotification);
+            lastRecordLock = engine.isRecordLocked();
+            recButton.setToggleState (lastRecordMode && ! lastRecordLock, juce::dontSendNotification);
+            recLockButton.setToggleState (lastRecordLock, juce::dontSendNotification);
             grid.setRecordMode (lastRecordMode);
         }
 
@@ -1283,40 +1303,55 @@ private:
             return;
 
         auto& s = sources[(size_t) pad];
+        const bool keepLength = s.audio == nullptr && s.beats > 0;
         s.normalised = MixerSettings::normaliseOnLoad();
         s.audio   = s.normalised ? Mixer::normalised (*audio, engine.getSampleRate()) : std::move (audio);
         s.name    = file.getFileNameWithoutExtension();
         s.file    = file;
         s.unsaved = false;
         s.nameBpm = bpmFromName (s.name);
-        s.beats   = guessBeats (s);
+        s.beats   = keepLength ? s.beats : guessBeats (s);
 
         grid.pad (pad).setClipName (s.name);
         grid.pad (pad).setLengthBeats (s.beats);
         sendToEngine (pad, false);
     }
 
-    void clearPad (int pad)
+    // The pad's loop length in beats (0 = auto, on an empty pad), which is what an empty pad records at.
+    void setPadLength (int pad, int numBeats)
+    {
+        sources[(size_t) pad].beats = numBeats;
+        grid.pad (pad).setLengthBeats (numBeats);
+        engine.setEmptyLength (pad, numBeats);
+    }
+
+    void clearPad (int pad, PadClear what = PadClear::soundAndLength)
     {
         // Deliver anything the engine has already finished first, so a take that just landed
         // can't refill the pad after it has been cleared.
         engine.pollEvents ([this] (const LooperEngine::Event& e) { handleEngineEvent (e); });
 
         auto& s = sources[(size_t) pad];
+
+        // Only a loop's length is worth keeping: on a one-shot it's a guess at the sample's length that nothing uses.
+        const bool keepLength = what == PadClear::sound && (s.mode == PadMode::loop || s.audio == nullptr);
+
         s.audio   = nullptr;
         s.name    = {};
         s.file    = juce::File();
         s.normalised = false;
         s.unsaved = false;
         s.nameBpm = 0.0;
-        s.beats   = 4;
         s.mergeInFlight = false;
         s.restretchPending = false;
         ++s.generation;                 // drops any stretch or merge still in flight
 
         grid.pad (pad).setClipName ({});
-        grid.pad (pad).setLengthBeats (0);
+        setPadLength (pad, keepLength ? s.beats : 0);
         engine.clearPad (pad);
+
+        if (what == PadClear::wipe)
+            padEffects.removeAll (pad);
     }
 
     // Sends the pad's sound to the engine: the original for one-shot/gate pads, or, for loop
@@ -1389,7 +1424,9 @@ private:
         if (s.nameBpm > 0.0)
             return juce::jmax (1, (int) std::lround (seconds * s.nameBpm / 60.0));
 
-        // Otherwise: the power-of-two length whose implied tempo is closest to the current tempo.
+        // Otherwise: the menu length (1, 2, 3, 4, 6, 8, 12... bars) whose implied tempo is closest to the
+        // current tempo. A loop at a very different tempo can still land on the wrong one; the file name
+        // tempo above, or a manual length, fixes that.
         const double beatsAtProjectTempo = seconds * tempoSlider.getValue() / 60.0;
         int best = 1;
         double bestErr = 1.0e9;
@@ -1479,13 +1516,13 @@ private:
     juce::ToggleButton metroButton { "Metronome" };
     BeatIndicator beats;
 
-    juce::TextButton recButton { "REC" };
+    juce::TextButton recButton { "REC" }, recLockButton { "Rec Lock" };
     double outputLatencyShare = 0.5;     // output latency / round trip, as the device reports them
     juce::ToggleButton monitorButton { "Monitor" };
     juce::TextButton monitorFxButton { "FX" };
     juce::Label latencyLabel;
     juce::Slider latencySlider { juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight };
-    bool lastRecordMode = false;
+    bool lastRecordMode = false, lastRecordLock = false;
     int takeCount = 0;
 
     std::array<PadSource, LooperEngine::numPads> sources;

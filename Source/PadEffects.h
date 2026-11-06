@@ -151,6 +151,23 @@ public:
         changed (target);
     }
 
+    // Takes the instrument and every effect off a pad.
+    void removeAll (int target)
+    {
+        auto& c = chains[(size_t) target];
+
+        if (c.empty() && instruments[(size_t) target] == nullptr)
+            return;
+
+        for (auto& slot : c)
+            slot->editorWindow = nullptr;      // the plugins themselves go when the engine lets go of them
+
+        removeInstrumentEditor (target);
+        c.clear();
+        instruments[(size_t) target] = nullptr;
+        changed (target);
+    }
+
     void showInstrumentEditor (int target)
     {
         if (auto& slot = instruments[(size_t) target])

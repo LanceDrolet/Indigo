@@ -107,10 +107,15 @@ enum class MixerControl { volume, pan, mute, solo };     // a pad's mixer strip,
 // Recording (REC mode on, or a take/overdub already in progress on that pad):
 //   - pad empty / stopped:   TAKE. Tap -> recording starts on the next grid line. Tap again -> it ends
 //                            on a later grid line and the pad starts looping the take immediately.
+//   - pad empty, with a loop length set (setEmptyLength): LOOPING TAKE. It starts the same way, but the pad loops at
+//                            that length from the first line and each pass is added to the last, like an overdub,
+//                            until a tap ends it on a later grid line. It needs a record buffer the length of the loop.
 //   - loop pad playing:      OVERDUB. Tap -> a layer starts summing the input into the loop on the
 //                            next grid line. Tap again -> it ends on a later grid line.
 //   Start/stop lines are never finer than one beat, so a take is always a whole number of beats.
 //   While a take/overdub is in progress (and until its merge lands) the tempo is locked.
+//   REC mode switches itself off when a recording is told to stop, so the next tap plays a pad; the REC lock keeps it
+//   on. Switched off, a pad that is recording still takes the tap that ends it.
 //
 // Latency: the input that arrives at transport time T was played in response to what was heard
 // roughly one round-trip earlier, so everything is shifted by recordLatency samples.
@@ -181,7 +186,8 @@ public:
     static constexpr int muteAllControl = mixerControlBase + numPads * numMixerControls;
     static constexpr int unmuteAllControl = muteAllControl + 1;
     static constexpr int playControl = unmuteAllControl + 1;      // the transport's Play / Stop toggle
-    static constexpr int numBindingTargets = playControl + 1;
+    static constexpr int recLockControl = playControl + 1;        // the REC lock toggle
+    static constexpr int numBindingTargets = recLockControl + 1;
 
     static constexpr int mixerTarget (int pad, MixerControl c) noexcept
     {
@@ -281,8 +287,10 @@ public:
     void setPadMode (int pad, PadMode mode);
     void setChokeGroup (int pad, int group);    // 0 = none
     void clearPad (int pad);       // stop it, drop its clip, cancel any take/overdub on it
+    void setEmptyLength (int pad, int beats);   // what the pad records at while it's empty (a looping take); 0 = none
     void setTempo (double bpm);
-    void setRecordMode (bool on);
+    void setRecordMode (bool on);  // on until a recording ends; also releases the lock
+    void setRecordLock (bool on);  // on until it's switched off
     void setPlaying (bool on);     // the transport (a Stop is ignored while isRecordingBusy())
 
     // Replaces the effects of a pad (or monitorTarget). Every plugin in the chain must already be prepared
@@ -316,7 +324,8 @@ public:
     int  getNumInputChannels() const noexcept        { return numInputChannels.load(); }
 
     PadStatus getPadStatus (int pad) const noexcept  { return (PadStatus) status[(size_t) pad].load(); }
-    bool isRecordMode() const noexcept               { return recordMode.load(); }
+    bool isRecordMode() const noexcept               { return recordMode.load(); }     // locked or not
+    bool isRecordLocked() const noexcept             { return recordLock.load(); }
     bool isPlaying() const noexcept                  { return transportOn.load(); }
     bool isRecordingBusy() const noexcept            { return recBusy.load(); }   // tempo is locked while true
     double getTempo() const noexcept                 { return bpm.load(); }
@@ -352,7 +361,7 @@ private:
 
     struct Command
     {
-        enum class Type { assignClip, trigger, release, setMode, setChoke, setTempo, setRecordMode, setTransport, clear, setFx } type = Type::trigger;
+        enum class Type { assignClip, trigger, release, setMode, setChoke, setTempo, setRecordMode, setRecordLock, setTransport, clear, setEmptyLength, setFx } type = Type::trigger;
         int pad = 0;
         int group = 0;
         Clip* clip = nullptr;
@@ -390,6 +399,7 @@ private:
 
         int chokeGroup = 0;
         int chokedBy = -1;               // pad whose queued start caused this pending stop, -1 if none
+        int emptyBeats = 0;              // loop length set for when the pad has no clip; 0 = none
 
         bool playing() const noexcept    { return active && fadeLeft == 0; }
 
@@ -399,6 +409,7 @@ private:
         // Take (first recording). Input arriving at transport time T lands at take index T - L - recStartAt.
         bool recActive = false;
         bool recPromoted = false;        // the take has become the pad's clip and is playing
+        bool recWraps = false;           // a looping take: promoted when it starts, and the passes add up in its clip
         Clip* recClip = nullptr;
         juce::int64 recStartAt = 0, recStartK = 0;
         juce::int64 recStopAt = -1;      // -1 until a stop is scheduled
@@ -426,6 +437,8 @@ private:
     void fadeOut (PadState&);
     int  indexOf (const PadState& p) const noexcept  { return (int) (&p - pads.data()); }
     void toggleRecordMode() noexcept;
+    void toggleRecordLock() noexcept;
+    void recordingEnded() noexcept;
     juce::int64 startTransport (juce::int64 at) noexcept;
     void stopTransport (juce::int64 at) noexcept;
     void shiftClock (juce::int64 by) noexcept;
@@ -434,6 +447,7 @@ private:
     void recordPress (PadState&, juce::int64 when);
     void armTake (PadState&, juce::int64 when);
     void armOverdub (PadState&, juce::int64 when);
+    void setTakeLength (PadState&, int beats);
     void scheduleRecStop (PadState&, juce::int64 stopK);
     void promoteTake (PadState&, juce::int64 at);
     void cancelRecording (PadState&);
@@ -445,6 +459,8 @@ private:
     void routePerformanceMidi (int n);
     void captureTake (PadState&, const juce::AudioBuffer<float>* input, int n, juce::int64 blockStart);
     void captureOverdub (PadState&, const juce::AudioBuffer<float>* input, int n, juce::int64 blockStart);
+    void sumIntoLoop (const PadState&, Clip& dest, const juce::AudioBuffer<float>& input, int n, juce::int64 blockStart,
+                      juce::int64 from, juce::int64 to);
     void finishRecording (int index, PadState&, juce::int64 blockEnd);
     void renderPad (PadState&, juce::AudioBuffer<float>&, int destStart, int count);
     void renderMetronome (juce::AudioBuffer<float>&, int destStart, int count, juce::int64 blockStart);
@@ -458,6 +474,8 @@ private:
     Clip* popRecordBuffer();
 
     double samplesPerBeat() const noexcept   { return sampleRate.load() * 60.0 / audioBpm; }
+    // Same expression the UI uses for a loop's ideal length, so both sides agree on the sample count.
+    double loopSamples (int beats) const noexcept { return (double) beats * 60.0 / audioBpm * sampleRate.load(); }
     double gridSamples() const noexcept;
     double recGridSamples() const noexcept   { return juce::jmax (gridSamples(), samplesPerBeat()); }
     juce::int64 quantizeTime (juce::int64 t) const noexcept;
@@ -520,6 +538,7 @@ private:
     std::atomic<bool> metronomeOn { false };
     std::atomic<bool> monitorOn { false };
     std::atomic<bool> recordMode { false };      // written by the audio thread only
+    std::atomic<bool> recordLock { false };      // ditto; recordMode is on whenever this is
     std::atomic<bool> transportOn { false };     // `running`, for the UI
     std::atomic<bool> recBusy { false };
     std::atomic<int> recordLatency { 0 };

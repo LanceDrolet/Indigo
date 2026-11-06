@@ -165,6 +165,7 @@ public:
         addAndMakeVisible (hintLabel);
 
         rows.add (new MappingRow (engine, LooperEngine::recControl, "REC toggle"));
+        rows.add (new MappingRow (engine, LooperEngine::recLockControl, "Rec Lock toggle"));
         rows.add (new MappingRow (engine, LooperEngine::playControl, "Play / Stop"));
         for (int i = 0; i < LooperEngine::numPads; ++i)
             rows.add (new MappingRow (engine, i, "Pad " + juce::String (i + 1)));

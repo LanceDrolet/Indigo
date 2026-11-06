@@ -4,13 +4,14 @@
 #include "LooperEngine.h"
 
 //==============================================================================
-// A complete MIDI mapping: what each pad, the REC toggle, Play / Stop and the mixer controls respond to.
+// A complete MIDI mapping: what each pad, the REC and REC lock toggles, Play / Stop and the mixer controls respond to.
 struct MidiMapping
 {
     static constexpr int numMixerTargets = LooperEngine::playControl - LooperEngine::mixerControlBase;
 
     std::array<MidiBinding, LooperEngine::numPads> pads;
     MidiBinding rec;
+    MidiBinding recLock;
     MidiBinding play;
     std::array<MidiBinding, numMixerTargets> mixer;     // [target - LooperEngine::mixerControlBase]
     int performanceChannel = 0;     // 1..16, 0 = none (see LooperEngine::setPerformanceChannel)
@@ -21,6 +22,7 @@ struct MidiMapping
         for (int i = 0; i < LooperEngine::numPads; ++i)
             m.pads[(size_t) i] = e.getBinding (i);
         m.rec = e.getBinding (LooperEngine::recControl);
+        m.recLock = e.getBinding (LooperEngine::recLockControl);
         m.play = e.getBinding (LooperEngine::playControl);
         for (int i = 0; i < numMixerTargets; ++i)
             m.mixer[(size_t) i] = e.getBinding (LooperEngine::mixerControlBase + i);
@@ -33,6 +35,7 @@ struct MidiMapping
         for (int i = 0; i < LooperEngine::numPads; ++i)
             e.setBinding (i, pads[(size_t) i]);
         e.setBinding (LooperEngine::recControl, rec);
+        e.setBinding (LooperEngine::recLockControl, recLock);
         e.setBinding (LooperEngine::playControl, play);
         for (int i = 0; i < numMixerTargets; ++i)
             e.setBinding (LooperEngine::mixerControlBase + i, mixer[(size_t) i]);
@@ -56,6 +59,7 @@ struct MidiMapping
         };
 
         add ("Rec", -1, rec);
+        add ("RecLock", -1, recLock);
         add ("Play", -1, play);
         for (int i = 0; i < LooperEngine::numPads; ++i)
             add ("Pad", i, pads[(size_t) i]);
@@ -92,6 +96,8 @@ struct MidiMapping
         {
             if (el->hasTagName ("Rec"))
                 m.rec = read (*el);
+            else if (el->hasTagName ("RecLock"))
+                m.recLock = read (*el);
             else if (el->hasTagName ("Play"))
                 m.play = read (*el);
             else if (el->hasTagName ("Pad") && juce::isPositiveAndBelow (el->getIntAttribute ("index", -1), LooperEngine::numPads))

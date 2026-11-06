@@ -4,21 +4,26 @@
 #include <array>
 #include <functional>
 
+enum class PadClear { sound, soundAndLength, wipe };     // wipe: and the instrument and effects
+
 //==============================================================================
 // One square pad. Accepts files dragged from the OS and from the in-app file tree.
-// Right-click for the pad mode menu (mode, loop length, choke group, instrument & effects, clear).
+// Right-click for the pad mode menu (mode, loop length, choke group, instrument & effects, the clear options).
 class PadComponent : public juce::Component,
                      public juce::FileDragAndDropTarget,
                      public juce::DragAndDropTarget
 {
 public:
     static constexpr const char* treeDragDescription = "audio-file";
-    static constexpr int lengthChoices[7] = { 1, 2, 4, 8, 16, 32, 64 };   // loop lengths, in beats
+    // Loop lengths offered in the menu (and tried by Auto), in beats: 1, 2 beats, then 1..32 bars
+    static constexpr int lengthChoices[] = { 1, 2, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128 };
+    static constexpr int maxCustomBars = 256;
     static constexpr int chokeMenuBase = 30;                               // menu ids 30 (none) .. 38
 
     explicit PadComponent (int idx) : index (idx) {}
 
-    std::function<void (int)> onPressed, onReleased, onCleared, onEffects;
+    std::function<void (int)> onPressed, onReleased, onEffects;
+    std::function<void (int, PadClear)> onCleared;
     std::function<void (int, const juce::File&)> onFileAssigned;
     std::function<void (int, PadMode)> onModeChanged;
     std::function<void (int, int)> onLengthChanged;      // (pad, beats); 0 = auto
@@ -224,13 +229,44 @@ private:
 
     juce::String modeLabel() const
     {
+        // On an empty pad of any mode the length counts: it's what the pad will record at.
+        const auto length = lengthBeats > 0 && (mode == PadMode::loop || clipName.isEmpty()) ? "  " + lengthText (lengthBeats)
+                                                                                             : juce::String();
         switch (mode)
         {
-            case PadMode::oneShot: return "ONE-SHOT";
-            case PadMode::loop:    return lengthBeats > 0 ? "LOOP  " + lengthText (lengthBeats) : "LOOP";
-            case PadMode::gate:    return "GATE";
+            case PadMode::oneShot: return "ONE-SHOT" + length;
+            case PadMode::loop:    return "LOOP" + length;
+            case PadMode::gate:    return "GATE" + length;
         }
         return {};
+    }
+
+    // Loop length in whole bars, for lengths the menu doesn't list (e.g. 5 or 12 bars)
+    void askCustomLength()
+    {
+        const int bar = LooperEngine::beatsPerBar;
+        const int currentBars = lengthBeats > 0 ? juce::jmax (1, (lengthBeats + bar / 2) / bar) : 4;
+
+        auto* w = new juce::AlertWindow ("Loop length", "Number of bars (1 - " + juce::String (maxCustomBars) + "):",
+                                         juce::MessageBoxIconType::NoIcon, this);
+        w->addTextEditor ("bars", juce::String (currentBars));
+        if (auto* ed = w->getTextEditor ("bars"))
+            ed->setInputRestrictions (3, "0123456789");
+        w->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
+        w->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+        juce::Component::SafePointer<PadComponent> safe (this);
+        w->enterModalState (true, juce::ModalCallbackFunction::create ([safe, w, bar] (int result)
+        {
+            if (safe == nullptr || result != 1)
+                return;
+
+            const int bars = w->getTextEditorContents ("bars").getIntValue();
+            if (bars < 1 || bars > maxCustomBars)
+                return;
+
+            if (safe->onLengthChanged) safe->onLengthChanged (safe->index, bars * bar);
+        }), true);
     }
 
     void showModeMenu()
@@ -242,9 +278,19 @@ private:
 
         // Loop length: how many beats the clip spans, so it can be stretched to the project tempo.
         juce::PopupMenu len;
-        len.addItem (10, "Auto");
-        for (int i = 0; i < 7; ++i)
-            len.addItem (11 + i, lengthText (lengthChoices[i]), true, lengthBeats == lengthChoices[i]);
+        // Menu ids: 100 Auto, 101.. the fixed choices, 199 Other... (kept clear of the choke ids)
+        constexpr int numChoices = (int) std::size (lengthChoices);
+        len.addItem (100, "Auto", true, lengthBeats == 0);
+        bool isCustom = lengthBeats > 0;
+        for (int i = 0; i < numChoices; ++i)
+        {
+            len.addItem (101 + i, lengthText (lengthChoices[i]), true, lengthBeats == lengthChoices[i]);
+            if (lengthBeats == lengthChoices[i])
+                isCustom = false;
+        }
+        len.addSeparator();
+        len.addItem (199, isCustom ? "Other (" + lengthText (lengthBeats) + ")..." : juce::String ("Other..."),
+                     true, isCustom);
 
         m.addSeparator();
         m.addSubMenu ("Loop length", len);
@@ -259,13 +305,33 @@ private:
 
         m.addSeparator();
         m.addItem (5, "Instrument & Effects...");
-        m.addItem (4, "Clear", clipName.isNotEmpty() || status != PadStatus::idle);
+
+        const bool hasSound = clipName.isNotEmpty() || status != PadStatus::idle;
+        const bool hasLength = hasSound || lengthBeats > 0;
+
+        m.addSeparator();
+        m.addItem (4, "Clear Sound", hasSound);
+        m.addItem (6, "Clear Sound & Length", hasLength);
+        m.addItem (7, "Wipe", hasLength || hasEffects || instrumentName.isNotEmpty());
 
         juce::Component::SafePointer<PadComponent> safe (this);
         m.showMenuAsync (juce::PopupMenu::Options(), [safe] (int result)
         {
             if (safe == nullptr || result == 0)
                 return;
+
+            if (result == 199)
+            {
+                safe->askCustomLength();
+                return;
+            }
+
+            if (result >= 100)
+            {
+                const int beats = result == 100 ? 0 : lengthChoices[result - 101];
+                if (safe->onLengthChanged) safe->onLengthChanged (safe->index, beats);
+                return;
+            }
 
             if (result >= chokeMenuBase)
             {
@@ -275,16 +341,10 @@ private:
                 return;
             }
 
-            if (result >= 10)
+            if (result == 4 || result == 6 || result == 7)
             {
-                const int beats = result == 10 ? 0 : lengthChoices[result - 11];
-                if (safe->onLengthChanged) safe->onLengthChanged (safe->index, beats);
-                return;
-            }
-
-            if (result == 4)
-            {
-                if (safe->onCleared) safe->onCleared (safe->index);
+                const auto what = result == 4 ? PadClear::sound : result == 6 ? PadClear::soundAndLength : PadClear::wipe;
+                if (safe->onCleared) safe->onCleared (safe->index, what);
                 return;
             }
 

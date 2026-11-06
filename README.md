@@ -35,18 +35,25 @@ One-shot and gate pads play whether the transport is running or not. Right-click
 
 Also in the pad's right-click menu:
 - **Loop length:** how many beats the sound spans. Loops are stretched to the project tempo without changing pitch;
-  *Auto* works it out from the file.
+  *Auto* works it out from the file. An empty pad keeps a length you set: a recording loops at that length (see
+  [Recording](#recording)), and a file dropped on the pad is fitted to it.
 - **Choke group (1–8):** starting a pad stops the other pads in its group on the same sample, so loop swaps land
   together.
 - **Instrument & Effects...:** see below.
-- **Clear:** empties the pad.
+- **Clear Sound:** empties the pad. A loop pad keeps its length, ready to record over at the same length.
+- **Clear Sound & Length:** empties the pad and sets the length back to *Auto*.
+- **Wipe:** does the same and removes the pad's instrument and effects too. Mode, choke group and mixer settings stay.
 
 ## Recording
 
-1. Turn on **REC**.
+1. Turn on **REC**. It switches off by itself when you end a recording, so your next tap plays a pad. **Rec Lock**
+   keeps record mode on until you switch it off. Either one can be mapped to a MIDI control.
 2. Tap an **empty** pad: recording starts on the next grid line. Tap it again: recording stops on a grid line and the
    pad starts looping what you played. Takes are always a whole number of beats.
-3. Tap a **playing loop** to **overdub**: your input is layered onto the loop, starting and stopping on grid lines.
+3. If the empty pad has a **loop length** set, it loops at that length from the moment recording starts and each pass
+   is layered onto the last, for as long as you like, until you tap it again. The length can't be longer than a record
+   buffer (60 seconds).
+4. Tap a **playing loop** to **overdub**: your input is layered onto the loop, starting and stopping on grid lines.
 
 **Monitor** lets you hear your input through Indigo. Use headphones, because speakers and a mic will feed back. If
 recordings land early or late against the beat, adjust **Rec latency** (the round-trip delay of your audio
@@ -91,8 +98,8 @@ Each pad has a **volume fader**, **pan** knob, **level meter**, **M** (mute) and
 
 ## MIDI and settings
 
-**Edit > Settings...** has three tabs:
-- **MIDI Mapping:** a note or CC (and channel) for each pad, REC, Play / Stop, and every mixer control, with Learn buttons. Save
+**Edit > Settings...** has four tabs:
+- **MIDI Mapping:** a note or CC (and channel) for each pad, REC, Rec Lock, Play / Stop, and every mixer control, with Learn buttons. Save
   mappings as named presets. Controllers plugged in while Indigo runs are picked up automatically.
 - **Audio:** ALSA or JACK, device, sample rate, buffer size and channels. Under JACK, the main mix, metronome and
   preview have their own outputs, so you can route the click to your headphones. **Per-pad outputs** (JACK only) adds
