@@ -252,6 +252,10 @@ public:
         midiDeviceListConnection = juce::MidiDeviceListConnection::make ([this] { enableAllMidiInputs(); });
         deviceManager.addMidiInputDeviceCallback ({}, &engine);
 
+        // MIDI sync out to a DAW (Settings > Sync)
+        engine.setSyncOffsetMs (SyncSettings::offsetMs());
+        SyncSettings::apply (engine);
+
         audioDeviceChanged();
         deviceManager.addChangeListener (this);
         padEffects.addChangeListener (this);
@@ -293,11 +297,13 @@ public:
         tree.removeListener (this);
     }
 
-    // Enabling an already-enabled input is a no-op, so this just picks up new devices
+    // Enabling an already-enabled input is a no-op, so this just picks up new devices. Indigo's own sync port is
+    // left alone: its clock and timecode would only come straight back in.
     void enableAllMidiInputs()
     {
         for (auto& dev : juce::MidiInput::getAvailableDevices())
-            deviceManager.setMidiInputDeviceEnabled (dev.identifier, true);
+            if (dev.name != SyncOutput::portName)
+                deviceManager.setMidiInputDeviceEnabled (dev.identifier, true);
     }
 
     void paint (juce::Graphics& g) override { g.fillAll (juce::Colour (0xff121212)); }

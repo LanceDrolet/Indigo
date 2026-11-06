@@ -1,4 +1,5 @@
 #include "LooperEngine.h"
+#include <limits>
 
 LooperEngine::LooperEngine()
 {
@@ -93,8 +94,12 @@ void LooperEngine::prepareToPlay (int samplesPerBlockExpected, double sr)
         reprepare (monitorFx);
     }
 
-    // Sample positions are meaningless after a rate change, so restart the clock.
+    // Sample positions are meaningless after a rate change, so restart the clock (and a DAW following it).
     transportPos = 0;
+    lastTick = -1;
+    lastBlockSize = 0;
+    syncStart = running;
+    syncStop = false;
     for (auto& p : pads)
     {
         p.pending = Pending::none;
@@ -682,6 +687,10 @@ juce::int64 LooperEngine::startTransport (juce::int64 at) noexcept
     running = true;
     stopAt = -1;
     transportOn.store (true);
+
+    syncStart = true;
+    syncStop = false;       // stopped and started again in one block: the Start alone says it all
+    lastTick = -1;
     return 0;
 }
 
@@ -706,6 +715,7 @@ void LooperEngine::stopTransport (juce::int64 at) noexcept
     running = false;
     stopAt = at;
     transportOn.store (false);
+    syncStop = true;
 }
 
 // Moves the clock, and the playback scheduled on it, back by `by` samples. Nothing is recording when it moves
@@ -1460,6 +1470,108 @@ void LooperEngine::routePerformanceMidi (int n)
     }
 }
 
+// Queues this block's MIDI clock and MTC on the sync port, each message timed for when its sample is heard. The port
+// sends in queue order, so the two are merged by time.
+void LooperEngine::sendSync (juce::int64 blockStart, int n) noexcept
+{
+    if (syncStart)
+    {
+        timecodePos = blockStart;       // bar 1 is transport sample 0
+        nextQuarter = 0;
+    }
+
+    const juce::int64 timecodeStart = timecodePos;
+    timecodePos += n;
+
+    const double sr = sampleRate.load();
+
+    if (! sync.isOpen() || sr <= 0.0)
+    {
+        syncStart = syncStop = false;
+        sentMtcRate = -1;
+        return;
+    }
+
+    const double heardMs = blockMs + 1000.0 * (double) instrumentLatency.load() / sr + syncOffsetMs.load();
+
+    auto send = [&] (juce::int64 t, const juce::uint8* bytes, int size)
+    {
+        SyncOutput::Message m;
+        std::copy (bytes, bytes + size, m.data.begin());
+        m.size = size;
+        m.timeMs = heardMs + 1000.0 * (double) (juce::jmax (t, blockStart) - blockStart) / sr;
+        sync.push (m);
+    };
+
+    auto sendByte = [&] (juce::int64 t, juce::uint8 byte) { send (t, &byte, 1); };
+
+    const bool clock = clockOn.load();
+    const int rateCode = mtcRate.load();
+    const bool mtc = rateCode >= 0;
+    const auto rate = (Mtc::Rate) rateCode;
+    const double perQuarter = mtc ? sr / (4.0 * Mtc::framesPerSecond (rate)) : 0.0;
+
+    if (syncStart && clock)
+        sendByte (0, 0xfa);     // Start
+
+    // Locate: on bar 1, or from the next full time when MTC is switched on, or changes rate, while playing
+    if (mtc && (syncStart || (running && rateCode != sentMtcRate)))
+    {
+        if (! syncStart)
+            nextQuarter = ((juce::int64) std::ceil ((double) timecodeStart / perQuarter) + 7) / 8 * 8;
+
+        const auto fullFrame = Mtc::fullFrame (nextQuarter / 4, rate);
+        send (syncStart ? 0 : blockStart, fullFrame.data(), (int) fullFrame.size());
+        sentMtcRate = rateCode;
+    }
+    else if (! mtc)
+    {
+        sentMtcRate = -1;
+    }
+
+    syncStart = false;
+
+    const juce::int64 end = running ? blockStart + n : stopAt >= 0 ? stopAt : blockStart;
+
+    if (end > blockStart)
+    {
+        constexpr auto never = std::numeric_limits<juce::int64>::max();
+        const double perTick = samplesPerBeat() / 24.0;
+
+        // Never fall more than a tick behind (the port was just opened mid-song): pick up from here.
+        if (clock)
+            lastTick = juce::jmax (lastTick, (juce::int64) std::floor ((double) blockStart / perTick) - 1);
+
+        for (;;)
+        {
+            const auto tick = clock ? (juce::int64) std::llround ((double) (lastTick + 1) * perTick) : never;
+            const auto quarter = mtc ? blockStart + std::llround ((double) nextQuarter * perQuarter) - timecodeStart : never;
+
+            if (juce::jmin (tick, quarter) >= end)
+                break;
+
+            if (tick <= quarter)
+            {
+                sendByte (tick, 0xf8);
+                ++lastTick;
+            }
+            else
+            {
+                const juce::uint8 bytes[] = { 0xf1, Mtc::quarterFrame (nextQuarter, rate) };
+                send (quarter, bytes, 2);
+                ++nextQuarter;
+            }
+        }
+    }
+
+    // No Song Position after it, though the transport is back at bar 1: Start already means "from the top", and a DAW
+    // that locates to 0 on the Song Position as well as on the next Start can trip over the two.
+    if (syncStop && clock)
+        sendByte (stopAt, 0xfc);
+
+    syncStop = false;
+}
+
 void LooperEngine::renderMetronome (juce::AudioBuffer<float>& out, int destStart, int count, juce::int64 blockStart)
 {
     const double sr  = sampleRate.load();
@@ -1498,6 +1610,17 @@ void LooperEngine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
 {
     const int n = info.numSamples;
     auto& out = *info.buffer;
+
+    // When this block is due, for MIDI sync. Blocks arrive with some jitter; follow the audio clock and only
+    // drift towards the callback times, unless they jump (a device restart, an xrun).
+    {
+        const double now = juce::Time::getMillisecondCounterHiRes();
+        const double expected = blockMs + 1000.0 * lastBlockSize / sampleRate.load();
+        const double tolerance = juce::jmax (20.0, 2000.0 * n / sampleRate.load());
+
+        blockMs = lastBlockSize == 0 || std::abs (now - expected) > tolerance ? now : expected + 0.02 * (now - expected);
+        lastBlockSize = n;
+    }
 
     // 0. The player has copied the input channels into the buffer; take them before it is cleared.
     haveInput = false;
@@ -1622,6 +1745,8 @@ void LooperEngine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
 
     const juce::int64 blockStart = transportPos;
     const juce::int64 blockEnd   = blockStart + n;
+
+    sendSync (blockStart, n);
 
     // 3. The performance channel, to the instruments
     routePerformanceMidi (n);

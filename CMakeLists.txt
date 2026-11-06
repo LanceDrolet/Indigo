@@ -39,6 +39,8 @@ target_sources(Indigo PRIVATE
     Source/EffectsWindow.h
     Source/FileBrowser.h
     Source/OutputBuses.h
+    Source/SyncOutput.h
+    Source/Mtc.h
     Source/Mixer.h
     Source/MixerPanel.h
     Source/Panes.h)

@@ -6,6 +6,8 @@
 #include "Effects.h"
 #include "OutputBuses.h"
 #include "Mixer.h"
+#include "SyncOutput.h"
+#include "Mtc.h"
 
 struct Clip
 {
@@ -149,6 +151,13 @@ enum class MixerControl { volume, pan, mute, solo };     // a pad's mixer strip,
 // affected). Volume and pan can follow a MIDI knob with soft takeover: after the UI sets a value, the knob has to
 // pass through it before it takes over, so nothing jumps. With per-pad outputs (JACK), each pad is also copied to its
 // own output pair, before or after its strip (OutputBuses::padsPreFader).
+//
+// MIDI sync: while the sync port is open (getSyncOutput), the transport is sent to it so a DAW can follow.
+//   - MIDI clock: Start on bar 1, 24 clocks per beat, and Stop (the next Start rewinds the DAW to bar 1 too).
+//   - MTC: a Full Frame at 00:00:00:00 on bar 1, then quarter frames while it plays, and silence when it stops (the
+//     next Full Frame rewinds the DAW). Timecode counts real time since bar 1, so a tempo change doesn't move it.
+// Each message is timed for when the audio rendered alongside it is heard (the output half of the latency), moved
+// by setSyncOffsetMs.
 class LooperEngine : public juce::AudioSource,
                      public juce::MidiInputCallback,
                      public juce::AudioPlayHead
@@ -321,6 +330,12 @@ public:
     // What instrument recordings are shifted by: from rendering a block to hearing it.
     void setInstrumentLatency (int samples) noexcept { instrumentLatency.store (juce::jmax (0, samples)); }
     void setNumInputChannels (int n) noexcept        { numInputChannels.store (juce::jlimit (0, 2, n)); }
+
+    // MIDI sync out (see above). The UI opens and closes the port. A positive offset sends everything later.
+    SyncOutput& getSyncOutput() noexcept             { return sync; }
+    void setClockOn (bool on) noexcept               { clockOn.store (on); }
+    void setMtcRate (int rate) noexcept              { mtcRate.store (rate); }     // an Mtc::Rate, or -1 for no MTC
+    void setSyncOffsetMs (double ms) noexcept        { syncOffsetMs.store (ms); }
     int  getNumInputChannels() const noexcept        { return numInputChannels.load(); }
 
     PadStatus getPadStatus (int pad) const noexcept  { return (PadStatus) status[(size_t) pad].load(); }
@@ -442,6 +457,7 @@ private:
     juce::int64 startTransport (juce::int64 at) noexcept;
     void stopTransport (juce::int64 at) noexcept;
     void shiftClock (juce::int64 by) noexcept;
+    void sendSync (juce::int64 blockStart, int n) noexcept;
     bool anyRecordingBusy() const noexcept;
 
     void recordPress (PadState&, juce::int64 when);
@@ -509,6 +525,13 @@ private:
     bool running = false;            // the transport is playing
     juce::int64 stopAt = -1;         // where this block's Stop landed (the metronome ends there), -1 = none
     double audioBpm = 120.0;
+    double blockMs = 0.0;            // when this block is due to start, on Time::getMillisecondCounterHiRes (smoothed)
+    int lastBlockSize = 0;
+    juce::int64 lastTick = -1;       // the last MIDI clock sent, counted from bar 1
+    bool syncStart = false, syncStop = false;     // Start / Stop still to be sent this block
+    juce::int64 timecodePos = 0;     // samples since bar 1. Not transportPos: a tempo change rescales that
+    juce::int64 nextQuarter = 0;     // the next MTC quarter frame, counted from frame 0
+    int sentMtcRate = -1;            // the rate followers were last located at, -1 = none
     double clickPhase = 0.0, clickFreq = 1000.0;
     int clickPos = 0, clickLen = 0;
     std::array<std::array<bool, 128>, 16> ccHigh {};   // [channel][cc] last state (>= 64), for press/release edges
@@ -557,4 +580,8 @@ private:
     std::atomic<int> learnTarget { -1 };
     std::atomic<int> performanceChannel { 0 };
     std::atomic<int> activePad { -1 };
+    std::atomic<bool> clockOn { false };
+    std::atomic<int> mtcRate { -1 };
+    std::atomic<double> syncOffsetMs { 0.0 };
+    SyncOutput sync;
 };

@@ -456,6 +456,156 @@ private:
 };
 
 //==============================================================================
+// MIDI sync with a DAW (Settings > Sync), kept in ~/.config/Indigo/Sync.xml.
+struct SyncSettings
+{
+    static juce::File file() { return MidiPresets::folder().getChildFile ("Sync.xml"); }
+
+    static bool clockOn()                       { return load()->getBoolAttribute ("clock", false); }
+    static bool mtcOn()                         { return load()->getBoolAttribute ("mtc", false); }
+    static int mtcRate()                        { return juce::jlimit (0, 3, load()->getIntAttribute ("mtcRate", Mtc::fps30)); }
+    static double offsetMs()                    { return load()->getDoubleAttribute ("clockOffsetMs", 0.0); }
+    static bool setClockOn (bool on)            { return set ("clock", on); }
+    static bool setMtcOn (bool on)              { return set ("mtc", on); }
+    static bool setMtcRate (int rate)           { return set ("mtcRate", rate); }
+    static bool setOffsetMs (double ms)         { return set ("clockOffsetMs", ms); }
+
+    // Puts the saved choices into effect: the port is open while either is on. False if it couldn't be created.
+    static bool apply (LooperEngine& engine)
+    {
+        const bool clock = clockOn(), mtc = mtcOn();
+        auto& out = engine.getSyncOutput();
+
+        out.setOpen (clock || mtc);
+        engine.setClockOn (clock);
+        engine.setMtcRate (mtc ? mtcRate() : -1);
+        return out.isOpen() == (clock || mtc);
+    }
+
+private:
+    static std::unique_ptr<juce::XmlElement> load()
+    {
+        auto xml = juce::XmlDocument::parse (file());
+        if (xml == nullptr || ! xml->hasTagName ("Sync"))
+            xml = std::make_unique<juce::XmlElement> ("Sync");
+        return xml;
+    }
+
+    template <typename Value>
+    static bool set (const char* name, Value value)
+    {
+        auto xml = load();
+        xml->setAttribute (name, value);
+        return MidiPresets::folder().createDirectory() && xml->writeTo (file());
+    }
+};
+
+//==============================================================================
+// Sync page: MIDI clock and MTC out on Indigo's own MIDI port, and how much to move them so the DAW lines up.
+class SyncSettingsPanel : public juce::Component
+{
+public:
+    explicit SyncSettingsPanel (LooperEngine& e) : engine (e)
+    {
+        clockButton.setTooltip ("Creates a MIDI output named \"Indigo\". Connect it to your DAW and set the DAW to follow "
+                                "external MIDI clock.");
+        clockButton.setToggleState (SyncSettings::clockOn(), juce::dontSendNotification);
+        clockButton.onClick = [this] { outputsChanged(); };
+        addAndMakeVisible (clockButton);
+
+        mtcButton.setTooltip ("Creates a MIDI output named \"Indigo\". Connect it to your DAW and set the DAW to follow "
+                              "external MTC at the same frame rate.");
+        mtcButton.setToggleState (SyncSettings::mtcOn(), juce::dontSendNotification);
+        mtcButton.onClick = [this] { outputsChanged(); };
+        addAndMakeVisible (mtcButton);
+
+        mtcRateBox.addItem ("24 fps", Mtc::fps24 + 1);
+        mtcRateBox.addItem ("25 fps", Mtc::fps25 + 1);
+        mtcRateBox.addItem ("29.97 fps drop", Mtc::fps2997Drop + 1);
+        mtcRateBox.addItem ("30 fps", Mtc::fps30 + 1);
+        mtcRateBox.setSelectedId (SyncSettings::mtcRate() + 1, juce::dontSendNotification);
+        mtcRateBox.onChange = [this] { outputsChanged(); };
+        addAndMakeVisible (mtcRateBox);
+
+        statusLabel.setColour (juce::Label::textColourId, juce::Colour (0xffe57373));
+        addAndMakeVisible (statusLabel);
+
+        offsetLabel.setText ("Sync offset", juce::dontSendNotification);
+        addAndMakeVisible (offsetLabel);
+
+        offsetSlider.setRange (-100.0, 100.0, 1.0);
+        offsetSlider.setTextValueSuffix (" ms");
+        offsetSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 70, 24);
+        offsetSlider.setDoubleClickReturnValue (true, 0.0);
+        offsetSlider.setTooltip ("Positive sends the sync later. If the DAW records the pads late against its grid, "
+                                 "raise it; early, lower it.");
+        offsetSlider.setValue (SyncSettings::offsetMs(), juce::dontSendNotification);
+        offsetSlider.onValueChange = [this]
+        {
+            engine.setSyncOffsetMs (offsetSlider.getValue());
+            SyncSettings::setOffsetMs (offsetSlider.getValue());
+        };
+        addAndMakeVisible (offsetSlider);
+
+        hintLabel.setText ("MIDI clock sends Start when the transport starts (always from bar 1), 24 clocks per beat while "
+                           "it plays, and Stop when it stops. MTC runs from 00:00:00:00 on bar 1 and counts real time, so "
+                           "tempo changes don't move it. Both are timed for when you hear the audio "
+                           "(the output half of Rec latency), plus the offset.",
+                           juce::dontSendNotification);
+        hintLabel.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.6f));
+        addAndMakeVisible (hintLabel);
+    }
+
+    void resized() override
+    {
+        auto r = getLocalBounds().reduced (12);
+
+        auto row = r.removeFromTop (28);
+        clockButton.setBounds (row.removeFromLeft (160));
+        statusLabel.setBounds (row);
+
+        r.removeFromTop (6);
+        row = r.removeFromTop (28);
+        mtcButton.setBounds (row.removeFromLeft (160));
+        mtcRateBox.setBounds (row.removeFromLeft (160));
+
+        r.removeFromTop (6);
+        row = r.removeFromTop (28);
+        offsetLabel.setBounds (row.removeFromLeft (110));
+        offsetSlider.setBounds (row.removeFromLeft (360));
+
+        r.removeFromTop (10);
+        hintLabel.setBounds (r.removeFromTop (80));
+    }
+
+private:
+    void outputsChanged()
+    {
+        SyncSettings::setClockOn (clockButton.getToggleState());
+        SyncSettings::setMtcOn (mtcButton.getToggleState());
+        SyncSettings::setMtcRate (mtcRateBox.getSelectedId() - 1);
+
+        const bool ok = SyncSettings::apply (engine);
+        statusLabel.setText (ok ? "" : "Couldn't create the MIDI port", juce::dontSendNotification);
+
+        if (! ok)
+        {
+            clockButton.setToggleState (false, juce::dontSendNotification);
+            mtcButton.setToggleState (false, juce::dontSendNotification);
+            SyncSettings::setClockOn (false);
+            SyncSettings::setMtcOn (false);
+            SyncSettings::apply (engine);
+        }
+    }
+
+    LooperEngine& engine;
+    juce::ToggleButton clockButton { "Send MIDI clock" }, mtcButton { "Send MTC" };
+    juce::ComboBox mtcRateBox;
+    juce::Label statusLabel, offsetLabel, hintLabel;
+    juce::Slider offsetSlider { juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight };
+};
+
+//==============================================================================
 // Browser page: the folder the sample browser opens in at startup (and goes to on Home).
 class BrowserSettingsPanel : public juce::Component
 {
@@ -566,6 +716,7 @@ public:
         auto* tabs = new juce::TabbedComponent (juce::TabbedButtonBar::TabsAtTop);
         tabs->addTab ("MIDI Mapping", juce::Colour (0xff1b1b1b), new MidiMappingPanel (e, p), true);
         tabs->addTab ("Audio", juce::Colour (0xff1b1b1b), new AudioSettingsPanel (dm), true);
+        tabs->addTab ("Sync", juce::Colour (0xff1b1b1b), new SyncSettingsPanel (e), true);
         tabs->addTab ("Browser", juce::Colour (0xff1b1b1b), new BrowserSettingsPanel (std::move (browserFolder)), true);
         tabs->setSize (700, 700);
 

@@ -104,6 +104,15 @@ Each pad has a **volume fader**, **pan** knob, **level meter**, **M** (mute) and
 - **Audio:** ALSA or JACK, device, sample rate, buffer size and channels. Under JACK, the main mix, metronome and
   preview have their own outputs, so you can route the click to your headphones. **Per-pad outputs** (JACK only) adds
   an output pair for each pad, pre- or post-fader, to record a performance into a DAW with the pads on separate tracks.
+- **Sync:** Either option creates a MIDI output named "Indigo" for a DAW to follow, and the DAW stays where it stopped
+  until the next start takes it back to bar 1.
+  - **Send MIDI clock:** Indigo sends Start when the transport starts (always from bar 1), 24 clocks per beat while it
+    plays, and Stop when it stops. The DAW can follow Indigo's tempo.
+  - **Send MTC:** MIDI Time Code from 00:00:00:00 on bar 1, at the frame rate you pick (set the DAW to the same one). It
+    counts real time, so tempo changes don't move it. Timecode followers take a moment to lock on after a start.
+
+  Both are timed for when you hear the audio. If the DAW records the pads early or late against its grid, adjust the
+  **sync offset** (positive = later).
 - **Browser:** the folder the browser starts in.
 
 ## Sessions and templates
