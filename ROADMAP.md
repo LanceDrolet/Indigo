@@ -45,6 +45,33 @@ Implementation notes:
   WASAPI needs nothing. Check MSVC warnings. Note: classic WinMM MIDI is single-client, so a controller
   held by a DAW won't reach Indigo.
 
+## Long term
+
+### State feedback to the floor controller
+Indigo sends state back to the Pico floor controller (8 pedals) so each pedal shows its mode: recording,
+playing, muted, Rec Lock, etc. Today the only MIDI out is the sync port (SyncOutput.h); nothing goes back
+to a controller.
+
+Undecided: LEDs or a 16x2 I2C display per pedal.
+- LEDs: Indigo sends the mapped note / CC back with the state as the value; the Pico lights accordingly.
+  Simple on both sides.
+- Displays: cheap, and new info means changing text instead of adding hardware. Needs SysEx (see below).
+
+Leaning MIDI, not OSC (considered 2026-11-07): USB MIDI keeps footswitch timing tight and plug-and-play;
+OSC would mean a Pico W on Wi-Fi (jitter, dropouts, IP setup). OSC is only worth it for phone / tablet
+control or a richer display.
+
+If displays, a sketch:
+- Indigo owns the text; the Pico only draws it, so new modes don't need a firmware update.
+- SysEx `F0 7D <note-or-cc> <line 0|1> <16 ASCII bytes> F7` (7D = non-commercial ID). Pedals are addressed
+  by the note / CC they send, which Indigo already knows from MIDI Learn, so there's no pedal table.
+- Pico sends a hello SysEx on boot; Indigo replies with every pedal's text, so either side can start first.
+- Indigo: open an output to the controller; send text when a mapped control's state changes.
+- Hardware: PCF8574 backpacks have 8 addresses (0x20–0x27; PCF8574A 0x38–0x3F), so exactly 8 per bus,
+  or split across the Pico's two I2C buses / a TCA9548A mux. LCDs are 5 V and the Pico is 3.3 V: remove the
+  backpack pull-ups and pull up to 3.3 V, or level-shift. I2C LCD writes are slow, so drive them from
+  core 1 and only rewrite changed characters. 8 backlights ≈ 150–250 mA.
+
 ## Done
 
 ### Pads and recording
